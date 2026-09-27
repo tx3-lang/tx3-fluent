@@ -1,4 +1,4 @@
-# The SDK transfer test vector (solution/sdks/sdk-spec/test-vectors/transfer),
+# The SDK transfer vector (tx3-lang/rust-sdk sdk/tests/fixtures/transfer.tii),
 # copied verbatim; the slug labels it. Its TII declares unknown/unknown:0.0.1.
 slug = "transfer_preprod"
 

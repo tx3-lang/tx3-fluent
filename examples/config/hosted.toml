@@ -1,0 +1,41 @@
+# Hosted Fluent: a public deployment behind TLS, callers authenticated with
+# OpenID Connect, and the browser site enabled. Every table is shown; see the
+# README for defaults. Keys ending in `_env` name environment variables whose
+# values are read at startup.
+
+[server]
+listen = "0.0.0.0:8080"
+public_url = "https://fluent.example.com"
+
+[registrations]
+dir = "/var/lib/fluent/registrations"
+
+[networks.mainnet]
+trp_url = "https://cardano-mainnet.trp-m1.demeter.run"
+trp_api_key_env = "TRP_MAINNET_API_KEY"
+
+[networks.preprod]
+trp_url = "https://cardano-preprod.trp-m1.demeter.run"
+trp_api_key_env = "TRP_PREPROD_API_KEY"
+
+[limits]
+resolver_timeout_secs = 30
+global_cutoff_secs = 45
+max_concurrent_resolutions = 8
+per_user_daily_quota = 200
+
+[auth]
+mode = "oidc"
+issuer = "https://auth.example.com/"
+jwks_url = "https://auth.example.com/.well-known/jwks.json"
+audience = "https://fluent.example.com/mcp"
+
+[store]
+sqlite_path = "/var/lib/fluent/fluent.sqlite"
+
+[site]
+enabled = true
+session_secret_env = "FLUENT_SESSION_SECRET"
+oidc_client_id_env = "FLUENT_OIDC_CLIENT_ID"
+oidc_client_secret_env = "FLUENT_OIDC_CLIENT_SECRET"
+redirect_url = "https://fluent.example.com/auth/callback"

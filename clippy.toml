@@ -1,0 +1,2 @@
+# Tests may unwrap; library and binary code may not (see `[workspace.lints]`).
+allow-unwrap-in-tests = true

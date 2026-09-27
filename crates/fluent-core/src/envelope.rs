@@ -34,7 +34,8 @@ pub struct PreparedTransaction {
     pub network: String,
     /// The transaction hash, hex encoded.
     pub tx_hash: String,
-    /// The unsigned transaction body in CBOR, hex encoded.
+    /// The complete unsigned transaction in CBOR, hex encoded: what a wallet
+    /// imports and signs, not only the transaction body.
     pub unsigned_tx_cbor_hex: String,
     /// A decoded summary for review before signing.
     pub summary: TransactionSummary,

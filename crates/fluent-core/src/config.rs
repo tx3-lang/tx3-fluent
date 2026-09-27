@@ -131,8 +131,12 @@ impl Default for LimitsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
 pub enum AuthConfig {
-    /// `mode = "none"`: every caller is accepted.
-    None,
+    /// `mode = "none"`: every caller is accepted. It takes no other keys.
+    ///
+    /// A struct variant rather than a unit variant, because serde ignores the
+    /// remaining keys of an internally tagged unit variant instead of
+    /// rejecting them.
+    None {},
     /// `mode = "token"`: callers present one static bearer token.
     Token {
         /// Variable holding the token.
@@ -404,11 +408,13 @@ impl Config {
             check_url(&mut problems, "site.redirect_url", url);
         }
 
-        for secret in self.secrets() {
+        // Name the key, never its value: a secret pasted into a `*_env` key
+        // must not reach error output.
+        for (key, secret) in self.secrets() {
             if !is_env_var_name(secret.var()) {
                 problems.push(format!(
-                    "`{}` is not a valid environment variable name",
-                    secret.var()
+                    "{key} must name an environment variable \
+                     (letters, digits and `_`, not starting with a digit)"
                 ));
             }
         }
@@ -427,22 +433,26 @@ impl Config {
             .unwrap_or_else(|err| format!("# configuration could not be rendered: {err}\n"))
     }
 
-    fn secrets(&self) -> impl Iterator<Item = &SecretRef> {
-        let networks = self
-            .networks
-            .values()
-            .filter_map(|n| n.trp_api_key_env.as_ref());
+    /// Every secret with the dotted key that names it.
+    fn secrets(&self) -> impl Iterator<Item = (String, &SecretRef)> {
+        let networks = self.networks.iter().filter_map(|(name, n)| {
+            let secret = n.trp_api_key_env.as_ref()?;
+            Some((format!("networks.{name}.trp_api_key_env"), secret))
+        });
         let auth = match &self.auth {
-            AuthConfig::Token { token_env } => Some(token_env),
-            AuthConfig::None | AuthConfig::Oidc { .. } => None,
+            AuthConfig::Token { token_env } => Some(("auth.token_env".to_string(), token_env)),
+            AuthConfig::None {} | AuthConfig::Oidc { .. } => None,
         };
         let site = [
-            &self.site.session_secret_env,
-            &self.site.oidc_client_id_env,
-            &self.site.oidc_client_secret_env,
+            ("site.session_secret_env", &self.site.session_secret_env),
+            ("site.oidc_client_id_env", &self.site.oidc_client_id_env),
+            (
+                "site.oidc_client_secret_env",
+                &self.site.oidc_client_secret_env,
+            ),
         ]
         .into_iter()
-        .flatten();
+        .filter_map(|(key, secret)| Some((key.to_string(), secret.as_ref()?)));
         networks.chain(auth).chain(site)
     }
 
@@ -453,7 +463,7 @@ impl Config {
             .filter_map(|n| n.trp_api_key_env.as_mut());
         let auth = match &mut self.auth {
             AuthConfig::Token { token_env } => Some(token_env),
-            AuthConfig::None | AuthConfig::Oidc { .. } => None,
+            AuthConfig::None {} | AuthConfig::Oidc { .. } => None,
         };
         let site = [
             &mut self.site.session_secret_env,
@@ -660,6 +670,44 @@ mod tests {
     }
 
     #[test]
+    fn accepts_auth_mode_none_alone() {
+        let text = MINIMAL.replace(
+            "mode = \"token\"\n        token_env = \"FLUENT_API_TOKEN\"",
+            "mode = \"none\"",
+        );
+        let config = Config::from_toml_str(&text, NO_ENV).unwrap();
+        assert!(matches!(config.auth, AuthConfig::None {}));
+        assert!(config.redacted().contains("mode = \"none\""));
+    }
+
+    #[test]
+    fn auth_mode_none_rejects_every_other_key() {
+        for extra in [
+            "token_env = \"FLUENT_API_TOKEN\"",
+            "issuer = \"https://id.example\"",
+            "surprise = 1",
+        ] {
+            let text = MINIMAL.replace(
+                "mode = \"token\"\n        token_env = \"FLUENT_API_TOKEN\"",
+                &format!("mode = \"none\"\n{extra}"),
+            );
+            let err = Config::from_toml_str(&text, NO_ENV).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Parse(_)),
+                "accepted `{extra}`: {err}"
+            );
+            assert!(err.to_string().contains("unknown field"), "{err}");
+        }
+    }
+
+    #[test]
+    fn overriding_auth_mode_to_none_does_not_drop_the_files_keys() {
+        let err = Config::from_toml_str(MINIMAL, [("FLUENT_AUTH__MODE", "none")]).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)), "{err}");
+        assert!(err.to_string().contains("unknown field"), "{err}");
+    }
+
+    #[test]
     fn requires_the_keys_of_the_selected_auth_mode() {
         let text = MINIMAL.replace("token_env = \"FLUENT_API_TOKEN\"", "");
         let err = Config::from_toml_str(&text, NO_ENV).unwrap_err();
@@ -795,9 +843,43 @@ mod tests {
                 "server.public_url must be an http:// or https:// URL",
                 "network name `Bad` must use lowercase letters, digits, `_` or `-`",
                 "networks.Bad.trp_url must not embed credentials; name them with a *_env key",
-                "`not-a-var` is not a valid environment variable name",
+                "networks.Bad.trp_api_key_env must name an environment variable \
+                 (letters, digits and `_`, not starting with a digit)",
             ]
         );
+    }
+
+    #[test]
+    fn invalid_env_names_are_reported_by_key_not_by_value() {
+        let pasted = "sk-live/9f3a+e1";
+        let text = MINIMAL.replace("\"FLUENT_API_TOKEN\"", &format!("\"{pasted}\""));
+        let err = Config::from_toml_str(
+            &text,
+            [
+                ("FLUENT_SITE__ENABLED", "true"),
+                ("FLUENT_SITE__SESSION_SECRET_ENV", pasted),
+                ("FLUENT_SITE__OIDC_CLIENT_ID_ENV", pasted),
+                ("FLUENT_SITE__OIDC_CLIENT_SECRET_ENV", pasted),
+                (
+                    "FLUENT_SITE__REDIRECT_URL",
+                    "https://fluent.example/callback",
+                ),
+            ],
+        )
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(!text.contains(pasted), "{text}");
+        for key in [
+            "auth.token_env",
+            "site.session_secret_env",
+            "site.oidc_client_id_env",
+            "site.oidc_client_secret_env",
+        ] {
+            assert!(
+                text.contains(&format!("{key} must name an environment variable")),
+                "{text}"
+            );
+        }
     }
 
     #[test]

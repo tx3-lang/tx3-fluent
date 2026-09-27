@@ -100,6 +100,22 @@ fn config_check_rejects_unknown_keys() {
 }
 
 #[test]
+fn config_check_rejects_an_auth_mode_override_that_would_drop_keys() {
+    let path = example("self-hosted.toml");
+    let output = fluent(
+        &["config", "check", "--config", path.to_str().unwrap()],
+        &[("FLUENT_AUTH__MODE", "none")],
+    );
+    assert!(!output.status.success(), "{}", stdout(&output));
+    assert!(stdout(&output).is_empty());
+    assert!(
+        stderr(&output).contains("unknown field `token_env`"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn config_check_reports_a_missing_file() {
     let output = fluent(&["config", "check", "--config", "does-not-exist.toml"], &[]);
     assert!(!output.status.success());

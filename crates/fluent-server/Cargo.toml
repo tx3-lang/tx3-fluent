@@ -1,0 +1,29 @@
+[package]
+name = "fluent-server"
+description = "Tx3 Fluent server: the `fluent` CLI, MCP transports, HTTP, store and site"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "fluent"
+path = "src/main.rs"
+
+[dependencies]
+fluent-core.workspace = true
+rmcp.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,34 @@
+# Self-hosted Fluent: one operator on one machine, a static bearer token and a
+# local devnet next to a hosted preprod resolver. Every table is shown; see the
+# README for defaults. Keys ending in `_env` name environment variables whose
+# values are read at startup.
+
+[server]
+listen = "127.0.0.1:8080"
+public_url = "http://127.0.0.1:8080"
+
+[registrations]
+dir = "./registrations"
+
+[networks.preprod]
+trp_url = "https://cardano-preprod.trp-m1.demeter.run"
+trp_api_key_env = "TRP_PREPROD_API_KEY"
+
+[networks.devnet]
+trp_url = "http://localhost:8164"
+
+[limits]
+resolver_timeout_secs = 20
+global_cutoff_secs = 30
+max_concurrent_resolutions = 2
+per_user_daily_quota = 1000
+
+[auth]
+mode = "token"
+token_env = "FLUENT_API_TOKEN"
+
+[store]
+sqlite_path = "./fluent.sqlite"
+
+[site]
+enabled = false

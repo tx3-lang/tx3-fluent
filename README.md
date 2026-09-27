@@ -9,8 +9,8 @@ user has reviewed the transaction.
 This repository is at its foundation stage. It holds the workspace layout and
 the contracts shared by every later component: the configuration model, the
 error type and the result envelope, plus offline address inspection.
-Registration loading, tool generation,
-resolution, transports, authentication, storage and the site are added later.
+Registration loading, tool generation, resolution, transports, authentication,
+storage and the site are added later.
 
 ## Layout
 

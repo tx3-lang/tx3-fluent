@@ -125,3 +125,34 @@ fn config_check_reports_a_missing_file() {
         stderr(&output)
     );
 }
+
+#[test]
+fn address_inspect_prints_the_report_as_json() {
+    let address = "addr_test1vz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzerspjrlsz";
+    let output = fluent(&["address", "inspect", address], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(report["input"], address);
+    assert_eq!(report["kind"], "shelley_enterprise");
+    assert_eq!(report["network"], "preprod_or_preview");
+    assert_eq!(report["network_id"], 0);
+    assert_eq!(report["payment_credential"]["type"], "key_hash");
+    assert_eq!(
+        report["payment_credential"]["hash_hex"],
+        "9493315cd92eb5d8c4304e67b7e16ae36d61d34502694657811a2c8e"
+    );
+    assert_eq!(report["stake_credential"], serde_json::Value::Null);
+}
+
+#[test]
+fn address_inspect_rejects_malformed_input() {
+    let output = fluent(&["address", "inspect", "addr1notarealaddress"], &[]);
+    assert!(!output.status.success());
+    assert!(stdout(&output).is_empty());
+    assert!(
+        stderr(&output).contains("invalid arguments: address is not valid bech32"),
+        "{}",
+        stderr(&output)
+    );
+}

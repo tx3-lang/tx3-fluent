@@ -1,0 +1,15 @@
+# Rule: the profile must exist. The transfer TII defines only local and preprod.
+slug = "missing_profile"
+
+[protocol]
+scope = "unknown"
+name = "unknown"
+version = "0.0.1"
+source = "local"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "preview"
+network = "preview"

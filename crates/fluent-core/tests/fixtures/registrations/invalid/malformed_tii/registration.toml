@@ -1,0 +1,15 @@
+# Rule: the TII must parse. This one has no `transactions`.
+slug = "malformed_tii"
+
+[protocol]
+scope = "unknown"
+name = "unknown"
+version = "0.0.1"
+source = "local"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "preprod"
+network = "preprod"

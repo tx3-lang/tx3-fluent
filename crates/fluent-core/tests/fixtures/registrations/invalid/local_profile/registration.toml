@@ -1,0 +1,15 @@
+# Rule: only mainnet, preprod and preview profiles can be deployed.
+slug = "local_profile"
+
+[protocol]
+scope = "unknown"
+name = "unknown"
+version = "0.0.1"
+source = "local"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "local"
+network = "preprod"

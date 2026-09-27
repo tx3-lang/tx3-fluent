@@ -131,13 +131,18 @@ pub enum FluentError {
         reason: String,
     },
 
-    /// The request targets a network the protocol or server does not serve.
-    #[error("network {requested} is not available for this request")]
+    /// The request targets a network the protocol or server does not serve,
+    /// or a registration declares a network its deployment profile does not
+    /// serve.
+    #[error("{}", network_mismatch_message(.requested, .available, .registration.as_deref()))]
     NetworkMismatch {
-        /// The network the caller asked for.
+        /// The network the caller asked for, or the registration declares.
         requested: String,
         /// The networks that would have been accepted.
         available: Vec<String>,
+        /// The registration bundle that declares `requested`, when the
+        /// mismatch is in a registration rather than a request.
+        registration: Option<String>,
     },
 
     /// The wallet cannot cover the value the transaction needs.
@@ -196,6 +201,21 @@ pub enum FluentError {
     },
 }
 
+fn network_mismatch_message(
+    requested: &str,
+    available: &[String],
+    registration: Option<&str>,
+) -> String {
+    match registration {
+        None => format!("network {requested} is not available for this request"),
+        Some(registration) => format!(
+            "registration {registration} declares network {requested}, \
+             but its deployment profile serves {}",
+            available.join(", ")
+        ),
+    }
+}
+
 impl FluentError {
     /// Wraps an unexpected failure as [`FluentError::Internal`].
     pub fn internal(source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
@@ -248,7 +268,14 @@ impl FluentError {
             FluentError::NetworkMismatch {
                 requested,
                 available,
-            } => Some(json!({ "requested": requested, "available": available })),
+                registration,
+            } => {
+                let mut details = json!({ "requested": requested, "available": available });
+                if let Some(registration) = registration {
+                    details["registration"] = json!(registration);
+                }
+                Some(details)
+            }
             FluentError::InsufficientFunds { input } | FluentError::InputNotResolved { input } => {
                 input.as_ref().map(|input| json!({ "input": input }))
             }
@@ -289,6 +316,7 @@ mod tests {
             FluentError::NetworkMismatch {
                 requested: "mainnet".into(),
                 available: vec!["preprod".into()],
+                registration: None,
             },
             FluentError::InsufficientFunds {
                 input: Some("source".into()),
@@ -357,5 +385,42 @@ mod tests {
         assert_eq!(err.code(), ErrorCode::InvalidArguments);
         assert_eq!(err.message(), "invalid arguments: not a valid address");
         assert_eq!(err.details(), Some(json!({ "arguments": ["receiver"] })));
+    }
+
+    #[test]
+    fn network_mismatch_names_the_registration_when_there_is_one() {
+        let request = FluentError::NetworkMismatch {
+            requested: "mainnet".into(),
+            available: vec!["preprod".into()],
+            registration: None,
+        };
+        assert_eq!(
+            request.message(),
+            "network mainnet is not available for this request"
+        );
+        assert_eq!(
+            request.details(),
+            Some(json!({ "requested": "mainnet", "available": ["preprod"] }))
+        );
+
+        let bundle = FluentError::NetworkMismatch {
+            requested: "preprod".into(),
+            available: vec!["mainnet".into()],
+            registration: Some("registrations/strike".into()),
+        };
+        assert_eq!(bundle.code(), ErrorCode::NetworkMismatch);
+        assert_eq!(
+            bundle.message(),
+            "registration registrations/strike declares network preprod, \
+             but its deployment profile serves mainnet"
+        );
+        assert_eq!(
+            bundle.details(),
+            Some(json!({
+                "requested": "preprod",
+                "available": ["mainnet"],
+                "registration": "registrations/strike"
+            }))
+        );
     }
 }

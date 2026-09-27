@@ -1,0 +1,15 @@
+# Rule: slugs are unique. Both bundles in this directory claim transfer_preprod.
+slug = "transfer_preprod"
+
+[protocol]
+scope = "unknown"
+name = "unknown"
+version = "0.0.1"
+source = "local"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "preprod"
+network = "preprod"

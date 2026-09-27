@@ -5,6 +5,7 @@ use std::fmt;
 use std::path::{Component, Path};
 use std::str::FromStr;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::check_url;
@@ -128,7 +129,9 @@ pub struct Deployment {
 }
 
 /// A Cardano network a registration can serve.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Network {
     /// Cardano mainnet.

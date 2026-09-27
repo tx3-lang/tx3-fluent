@@ -23,5 +23,8 @@ tracing.workspace = true
 pallas-addresses.workspace = true
 pallas-primitives.workspace = true
 
+[dev-dependencies]
+jsonschema.workspace = true
+
 [lints]
 workspace = true

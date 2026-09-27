@@ -8,18 +8,20 @@ user has reviewed the transaction.
 
 This repository is at an early stage. It holds the workspace layout, the
 contracts shared by every later component (the configuration model, the error
-type and the result envelope) and the registration bundle loader. Registry
-fetching, tool generation, resolution, transports, authentication, storage and
+type and the result envelope), the registration bundle loader and the tool
+catalog. Registry fetching, resolution, transports, authentication, storage and
 the site are added later.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
-| `crates/fluent-core` | Library: configuration, errors, result envelopes, registration bundles; later tool catalog, engine and address utilities. |
+| `crates/fluent-core` | Library: configuration, errors, result envelopes, registration bundles, tool catalog; later engine and address utilities. |
 | `crates/fluent-server` | The `fluent` binary: CLI; later MCP transports, HTTP, store and site. |
 | `examples/config` | Example configurations, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
+| `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
+| `crates/fluent-core/tests/golden` | Reviewed tool descriptor lists the catalog tests compare against. |
 
 ## Build and test
 
@@ -251,6 +253,52 @@ form:
 printf '%s' "$tii_digest$skill_digest$profile$network" | sha256sum | cut -c1-12
 ```
 
+## Tool catalog
+
+Every loaded registration offers one MCP tool per TII transaction. Two fixed
+tools are always offered as well. Tool descriptors are computed once from the
+loaded registrations; nothing here invokes a tool.
+
+| Field | Transaction tool |
+| --- | --- |
+| name | `{slug}_{tx}`: the TII transaction name lowercased, every character outside `[a-z0-9_]` replaced by `_`; at most 64 characters. |
+| title | `{protocol name} {version} · {tx} ({network})`, with the transaction name as the TII writes it. |
+| description | The TII transaction description, if any, then: `Prepares an UNSIGNED {network} transaction for {scope}/{name}:{version}. Nothing is signed or submitted. Call fluent_get_skill for this protocol before using this tool.` |
+| input schema | Self-contained; see below. |
+| output schema | The `PreparedTransaction` schema, with every subschema inlined. |
+| annotations | `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: false`, `openWorldHint: true`. |
+
+The input schema starts from the transaction's `params` and has no `$ref`:
+
+- `https://tx3.land/specs/v1beta0/tii#/$defs/{Name}` and the legacy
+  `https://tx3.land/specs/v1beta0/core#{Name}` are replaced by the TII
+  specification's definitions: `Address` is a string described as a bech32
+  address, `Bytes` a hex string with an optional `0x`, `UtxoRef` a string
+  matching `^(0x)?[0-9a-fA-F]{64}#[0-9]+$`, `AnyAsset` an object with
+  `policy`, `asset_name` and `amount`, and `Utxo` an object;
+- `#/components/schemas/{Name}` is replaced by the TII's own component;
+- keywords written next to a `$ref`, such as a `description`, are kept;
+- after the parameters come one required string property per party the
+  deployment profile does not bind (named as the party in lowercase and
+  described as its bech32 address), then every environment field the profile
+  does not bind, required when the TII environment requires it;
+- values the profile binds are left out entirely, and
+  `additionalProperties` is `false`.
+
+Every other keyword of the TII schemas (`description`, `minimum`, `pattern`,
+`enum`, …) and the order of `required` are kept. A registration's tools cannot
+be built, and it is reported as `registration_unavailable`, when a `$ref`
+cannot be resolved or is recursive, when a tool name is too long or shared by
+two of its transactions, or when a parameter, party and environment field
+share an argument name (names are compared in lowercase, bound or not). Two
+tools with the same name, across registrations or with a fixed tool, are an
+error for the whole catalog.
+
+| Fixed tool | Input | Output | Annotations |
+| --- | --- | --- | --- |
+| `fluent_get_skill` | `{ protocol }`: a registration slug or `scope/name` | `{ protocol: { scope, name, version, registration_slug, registration_revision, network }, skill_revision, dependencies, markdown }` | read-only, idempotent, closed world |
+| `fluent_inspect_address` | `{ address }` | an `AddressReport` object | read-only, idempotent, closed world |
+
 ## Shared contracts
 
 - `fluent_core::config::Config`: the model above; `Config::load`,
@@ -269,6 +317,12 @@ printf '%s' "$tii_digest$skill_digest$profile$network" | sha256sum | cut -c1-12
   `Arc<Registration>`, with `get` and `iter`) and the rejected bundles.
   `Registration` exposes its `Manifest`, `SkillDocument`, TII, digests and
   revision, and cannot be changed once loaded.
+- `fluent_core::catalog`: `build_tools(&Registration)` and `fixed_tools()`
+  return `ToolDescriptor`s (`name`, `title`, `description`, `input_schema`,
+  `output_schema`, `annotations`, `registration_slug`, `tx_name`);
+  `all_tools(&Catalog)` returns both and rejects duplicate names.
+  `catalog::schema::inline` is the pure `$ref` inliner, and `SkillResult` is
+  the `fluent_get_skill` result.
 
 ## License
 

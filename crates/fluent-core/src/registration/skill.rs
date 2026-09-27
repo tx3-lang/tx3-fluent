@@ -1,5 +1,6 @@
 //! `SKILL.md`: the consumption skill bound to a registration.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::manifest::Network;
@@ -33,7 +34,7 @@ pub struct SkillDocument {
 
 /// Something a skill needs from outside Fluent, and the transactions that need
 /// it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SkillDependency {
     /// Stable identifier of the dependency.

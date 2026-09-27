@@ -6,18 +6,20 @@ endpoint and returns an **unsigned, unsubmitted** transaction with a readable
 summary. Fluent never holds keys, signs or submits: a wallet does that after the
 user has reviewed the transaction.
 
-This repository is at its foundation stage. It holds the workspace layout and
-the contracts shared by every later component: the configuration model, the
-error type and the result envelope. Registration loading, tool generation,
-resolution, transports, authentication, storage and the site are added later.
+This repository is at an early stage. It holds the workspace layout, the
+contracts shared by every later component (the configuration model, the error
+type and the result envelope) and the registration bundle loader. Registry
+fetching, tool generation, resolution, transports, authentication, storage and
+the site are added later.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
-| `crates/fluent-core` | Library: configuration, errors, result envelopes; later registration, catalog, engine and address utilities. |
+| `crates/fluent-core` | Library: configuration, errors, result envelopes, registration bundles; later tool catalog, engine and address utilities. |
 | `crates/fluent-server` | The `fluent` binary: CLI; later MCP transports, HTTP, store and site. |
 | `examples/config` | Example configurations, loaded by the tests. |
+| `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 
 ## Build and test
 
@@ -45,6 +47,16 @@ fluent config check --config examples/config/self-hosted.toml
 secrets it names, validates the result and prints it with secrets redacted. It
 exits non-zero and prints the problem when the configuration is invalid.
 
+```sh
+fluent registrations check --config examples/config/self-hosted.toml
+```
+
+`registrations check` loads the configuration, then every bundle in
+`[registrations].dir`, and prints one TOML `[[registration]]` table per
+registration (slug, protocol, network, profile, revision, digests, bundle) and
+one `[[rejected]]` table per rejected bundle (bundle, error code, message). It
+exits non-zero when any bundle is rejected or the directory cannot be read.
+
 ## Configuration reference
 
 Fluent reads one TOML file, passed with `--config`. **Unknown keys are errors.**
@@ -64,7 +76,7 @@ never serializes it. An empty value counts as unset. Redacted output shows
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `dir` | path | required | Directory holding protocol registrations. |
+| `dir` | path | required | Directory holding one [registration bundle](#registration-bundles) per subdirectory. A relative path resolves against the working directory. |
 
 ### `[networks.<name>]` (at least one)
 
@@ -140,6 +152,105 @@ overrides, so they can hold secrets named by `*_env` keys.
 - [`examples/config/hosted.toml`](examples/config/hosted.toml): a public
   deployment with OIDC, mainnet and preprod, and the site enabled.
 
+## Registration bundles
+
+A registration binds one protocol's TII, its consumption skill and one
+deployment profile. Each non-hidden subdirectory of `[registrations].dir` is
+one bundle; entries whose names start with `.` (such as a cache) and plain
+files are skipped. Registrations are loaded once at startup: changing a bundle
+takes effect on restart.
+
+```text
+registrations/
+  strike_staking_mainnet/
+    registration.toml   manifest
+    SKILL.md            consumption skill
+    protocol.tii        TII; source = "local" only
+```
+
+### `registration.toml`
+
+Unknown keys are errors. Paths are relative to the bundle and must stay inside
+it.
+
+```toml
+slug = "strike_staking_mainnet"          # ^[a-z][a-z0-9_]{2,40}$, unique
+[protocol]                                # equal to the TII protocol block
+scope = "open-tx3"
+name = "strike-staking"
+version = "0.2.0"
+source = "local"                          # or "registry"
+[protocol.registry]                       # required iff source = "registry"
+url = "https://oci.tx3.land"
+ref = "open-tx3/strike-staking:0.2.0"
+manifest_digest = "sha256:…"              # artifact manifest content digest
+[artifact]
+tii = "protocol.tii"                      # local only; default protocol.tii
+tii_digest = "sha256:…"                   # required for registry; checked if set
+[skill]
+path = "SKILL.md"                         # default SKILL.md
+[deployment]
+profile = "mainnet"                       # mainnet | preprod | preview
+network = "mainnet"                       # must be the profile's network
+```
+
+A registry-sourced bundle carries no TII: its TII comes only from the
+digest-verified registry fetch. Registry fetching is not implemented yet, so
+this build rejects registry-sourced bundles.
+
+### `SKILL.md`
+
+YAML frontmatter between two `---` lines, then the Markdown body, which is
+kept verbatim. Unknown frontmatter keys are errors.
+
+```yaml
+---
+name: strike-staking
+description: One sentence ending with when to use the skill.
+license: Apache-2.0                       # optional
+protocol: open-tx3/strike-staking:0.2.0   # scope/name:version
+tii_digest: sha256:…                      # digest of the registration's TII
+network: mainnet
+revision: 1                               # the skill's own revision
+dependencies:                             # optional
+  - id: strike_balance
+    description: What the assistant must obtain elsewhere.
+    required_for: [stake]                 # transactions of the TII
+---
+```
+
+### Rules
+
+A bundle is rejected, without stopping the others, when:
+
+- `registration.toml`, the TII or the skill cannot be read or parsed; the TII
+  must parse as TII (`tx3_sdk::tii::Protocol` and `tii::spec::TiiFile`);
+- the manifest breaks a rule above, or its `tii_digest` differs from the TII's;
+- `[protocol]` differs from the TII `protocol` block;
+- the profile is not defined in the TII, or is not `mainnet`, `preprod` or
+  `preview` (so `local` is rejected);
+- `deployment.network` differs from the profile's network
+  (`network_mismatch`);
+- the skill's `protocol`, `tii_digest` or `network` differs from the
+  registration, or a dependency names a transaction the TII does not define
+  ("incompatible skill binding");
+- another loaded bundle has the same slug: every claimant is rejected.
+
+Every rejection except `network_mismatch` has the code
+`registration_unavailable`, and its message names the bundle path and the
+broken rule.
+
+### Digests and revision
+
+`tii_digest` and `skill_digest` are `sha256:<hex>` over the exact file bytes.
+The revision is the first 12 hex digits of the SHA-256 of the string
+`{tii_digest}{skill_digest}{profile}{network}`, digests in their `sha256:<hex>`
+form:
+
+```sh
+printf '%s' "$tii_digest$skill_digest$profile$network" | sha256sum | cut -c1-12
+```
+
 ## Shared contracts
 
 - `fluent_core::config::Config`: the model above; `Config::load`,
@@ -154,6 +265,10 @@ overrides, so they can hold secrets named by `*_env` keys.
 - `fluent_core::envelope::PreparedTransaction`: the unsigned-transaction
   result. `status`, `signed`, `submitted` and `next_steps` are fixed values, and
   it derives `schemars::JsonSchema` for use as an MCP output schema.
+- `fluent_core::registration`: `load_dir` returns a `Catalog` (slug →
+  `Arc<Registration>`, with `get` and `iter`) and the rejected bundles.
+  `Registration` exposes its `Manifest`, `SkillDocument`, TII, digests and
+  revision, and cannot be changed once loaded.
 
 ## License
 

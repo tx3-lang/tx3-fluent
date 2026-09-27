@@ -568,7 +568,7 @@ fn apply_overrides(
     Ok(applied)
 }
 
-fn check_url(problems: &mut Vec<String>, key: &str, url: &str) {
+pub(crate) fn check_url(problems: &mut Vec<String>, key: &str, url: &str) {
     let Some(rest) = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))

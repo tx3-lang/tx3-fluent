@@ -35,6 +35,8 @@ schemars = "1"
 thiserror = "2"
 anyhow = "1"
 toml = "0.8"
+# Pure-Rust, panic-free YAML for skill frontmatter.
+serde-saphyr = { version = "1.3", default-features = false, features = ["deserialize"] }
 sha2 = "0.11"
 hex = "0.4"
 clap = { version = "4", features = ["derive"] }

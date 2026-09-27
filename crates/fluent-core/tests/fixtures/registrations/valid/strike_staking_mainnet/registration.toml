@@ -1,0 +1,19 @@
+# The protocol-gateway Strike staking TII, copied verbatim. No tii_digest:
+# it is optional for local bundles.
+slug = "strike_staking_mainnet"
+
+[protocol]
+scope = "strike-finance"
+name = "strike-staking"
+version = "0.1.0"
+source = "local"
+
+[artifact]
+tii = "strike-staking.tii"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "mainnet"
+network = "mainnet"

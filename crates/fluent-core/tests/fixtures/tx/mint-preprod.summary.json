@@ -1,0 +1,74 @@
+{
+  "tx_hash": "d6ebdcbdae8ffbc25bdd3ee1cb5b3ceb7091ba20d8cf1fd5230cd655db680770",
+  "transaction": {
+    "inputs": [
+      {
+        "ref": "8d7a6ca5f988a32eb2e14392acc1d9b3acbd63a5bd30120e6beced93e140951b#1"
+      },
+      {
+        "ref": "d6f541dfb3d40b243accaf5d5fac6c36e84c2888b4422bd5aac6750d11788955#0"
+      }
+    ],
+    "outputs": [
+      {
+        "address": "addr_test1qpdmfr7ltjmdm6ef8ygh5224scsvktlt5lm7fpd3yre2xktv66cufzyerwhaw9xety2f756chgdj0svt6r5syr00fy3sh5fe9y",
+        "lovelace": 9795628022,
+        "assets": [
+          {
+            "policy_id": "81c43d73f7ea776126f4034542dd905a7b52f31d6f4ccf6260dd2e4b",
+            "asset_name_hex": "4649454c442d303030303031",
+            "amount": 1
+          },
+          {
+            "policy_id": "81c43d73f7ea776126f4034542dd905a7b52f31d6f4ccf6260dd2e4b",
+            "asset_name_hex": "4649454c442d303030303032",
+            "amount": 1
+          },
+          {
+            "policy_id": "81c43d73f7ea776126f4034542dd905a7b52f31d6f4ccf6260dd2e4b",
+            "asset_name_hex": "4649454c442d303030303033",
+            "amount": 1
+          },
+          {
+            "policy_id": "81c43d73f7ea776126f4034542dd905a7b52f31d6f4ccf6260dd2e4b",
+            "asset_name_hex": "4649454c442d303030303036",
+            "amount": 1
+          },
+          {
+            "policy_id": "81c43d73f7ea776126f4034542dd905a7b52f31d6f4ccf6260dd2e4b",
+            "asset_name_hex": "4649454c442d303030303137",
+            "amount": 1
+          },
+          {
+            "policy_id": "af8c117f09e53b346b0391af4b35fdfae768e2cb9b02ab55277ca8ad",
+            "asset_name_hex": "4649454c442d303030303031",
+            "amount": 1
+          }
+        ]
+      },
+      {
+        "address": "addr_test1qpdmfr7ltjmdm6ef8ygh5224scsvktlt5lm7fpd3yre2xktv66cufzyerwhaw9xety2f756chgdj0svt6r5syr00fy3sh5fe9y",
+        "lovelace": 1172320,
+        "assets": [
+          {
+            "policy_id": "81c43d73f7ea776126f4034542dd905a7b52f31d6f4ccf6260dd2e4b",
+            "asset_name_hex": "4649454c442d303030303230",
+            "amount": 1
+          }
+        ]
+      }
+    ],
+    "fee_lovelace": 210513,
+    "mint": [
+      {
+        "policy_id": "81c43d73f7ea776126f4034542dd905a7b52f31d6f4ccf6260dd2e4b",
+        "asset_name_hex": "4649454c442d303030303230",
+        "amount": 1
+      }
+    ],
+    "validity": {
+      "until_slot": 134875213
+    },
+    "required_signers": []
+  }
+}

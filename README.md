@@ -9,9 +9,9 @@ user has reviewed the transaction.
 This repository is at an early stage. It holds the workspace layout, the
 contracts shared by every later component (the configuration model, the error
 type and the result envelope), offline address inspection, the registration
-bundle loader, the tool catalog and the transaction preparation engine, and the MCP server over stdio. Registry
-fetching, the HTTP transport, authentication, quotas, storage and the site are
-added later.
+bundle loader, the tool catalog and the transaction preparation engine, and the
+MCP server over stdio. Registry fetching, the HTTP transport, authentication,
+quotas, storage and the site are added later.
 
 ## Layout
 

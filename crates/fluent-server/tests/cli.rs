@@ -488,3 +488,124 @@ fn prepare_prints_errors_as_json_and_fails() {
     );
     assert!(!message.contains("12345"), "{message}");
 }
+
+/// A configuration serving the valid fixture bundles on `listen`, with
+/// `auth` as the `[auth]` table body.
+fn http_config(name: &str, listen: &str, auth: &str) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.toml"));
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../fluent-core/tests/fixtures/registrations/valid");
+    let text = format!(
+        "[server]\nlisten = \"{listen}\"\n\n[registrations]\ndir = {}\n\n\
+         [networks.preprod]\ntrp_url = \"http://127.0.0.1:9\"\n\n[auth]\n{auth}\n",
+        toml::Value::String(dir.display().to_string())
+    );
+    std::fs::write(&path, text).expect("write configuration");
+    path
+}
+
+#[test]
+fn serve_requires_exactly_one_transport() {
+    let config = http_config("serve-transport", "127.0.0.1:0", "mode = \"none\"");
+    let config = config.to_str().expect("UTF-8 path");
+    for args in [
+        vec!["serve", "--config", config],
+        vec!["serve", "--stdio", "--http", "--config", config],
+    ] {
+        let output = fluent(&args, &[]);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(stderr(&output).contains("--stdio"), "{}", stderr(&output));
+    }
+}
+
+#[test]
+fn serve_http_refuses_an_open_server_on_every_interface() {
+    let config = http_config("serve-open", "0.0.0.0:0", "mode = \"none\"");
+    let output = fluent(
+        &[
+            "serve",
+            "--http",
+            "--config",
+            config.to_str().expect("UTF-8 path"),
+        ],
+        &[],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("refusing to serve 0.0.0.0:0"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn serve_http_stops_gracefully_on_sigterm() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .expect("a free port")
+        .port();
+    let config = http_config(
+        "serve-sigterm",
+        &format!("127.0.0.1:{port}"),
+        "mode = \"token\"\ntoken_env = \"FLUENT_API_TOKEN\"",
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fluent"))
+        .args(["serve", "--http", "--config"])
+        .arg(&config)
+        .env_clear()
+        .env("FLUENT_API_TOKEN", "t")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn fluent serve --http");
+
+    // Wait for `/healthz` to answer.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let health = loop {
+        let answer = TcpStream::connect(("127.0.0.1", port)).and_then(|mut stream| {
+            stream.write_all(
+                b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            )?;
+            let mut answer = String::new();
+            stream.read_to_string(&mut answer)?;
+            Ok(answer)
+        });
+        match answer {
+            Ok(answer) => break answer,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Err(err) => panic!("fluent never answered /healthz: {err}"),
+        }
+    };
+    assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    assert!(health.contains(env!("CARGO_PKG_VERSION")), "{health}");
+
+    let killed = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("run kill");
+    assert!(killed.success());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for fluent") {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "fluent ignored SIGTERM");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut logs = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut logs)
+        .expect("read stderr");
+    assert!(status.success(), "{status}: {logs}");
+    assert!(logs.contains("SIGTERM received"), "{logs}");
+    assert!(!logs.contains("\"t\""), "{logs}");
+}

@@ -10,15 +10,16 @@ This repository is at an early stage. It holds the workspace layout, the
 contracts shared by every later component (the configuration model, the error
 type and the result envelope), offline address inspection, the registration
 bundle loader with its registry artifact fetch, the tool catalog and the
-transaction preparation engine, and the MCP server over stdio. The HTTP
-transport, authentication, quotas, storage and the site are added later.
+transaction preparation engine, and the MCP server over stdio and over
+Streamable HTTP with bearer-token or OAuth 2.1 (OIDC) authentication. Per-user
+tool scopes, quotas, storage and the site are added later.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
 | `crates/fluent-core` | Library: configuration, errors, result envelopes, address inspection, registration bundles, tool catalog, preparation engine and transaction summaries. |
-| `crates/fluent-server` | The `fluent` binary: CLI and the MCP server over stdio; later HTTP, store and site. |
+| `crates/fluent-server` | The `fluent` binary: CLI and the MCP server over stdio and HTTP; later store and site. |
 | `examples/config` | Example configurations, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
@@ -184,6 +185,92 @@ A desktop client registers the same command, for example:
 }
 ```
 
+### Over HTTP
+
+```sh
+fluent serve --http --config fluent.toml
+```
+
+`serve --http` serves the same MCP server over
+[Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http)
+on `[server].listen`, until SIGTERM or Ctrl-C; then it ends every session and
+waits for requests in flight. Sessions are kept in memory, so a restart ends
+them.
+
+| Route | Authenticated | Serves |
+| --- | --- | --- |
+| `/mcp` | yes | MCP: `POST` messages, `GET` the session's event stream, `DELETE` the session. |
+| `GET /healthz` | no | `{"status": "ok", "version": "<crate version>"}`. |
+| `GET /.well-known/oauth-protected-resource` | no | [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) metadata, `oidc` mode only; also under `…/mcp`. |
+
+Every request to `/mcp` is authenticated as [`[auth]`](#auth-required) says:
+
+- `none`: every caller is accepted. Fluent refuses to start unless `listen`
+  is a loopback address.
+- `token`: `Authorization: Bearer <token>` must equal the value of
+  `token_env`, compared in constant time. Fluent refuses to start when that
+  variable is unset or empty.
+- `oidc`: the bearer token must be a JWT signed with RS256 or ES256 by a key,
+  named by its `kid`, from the issuer's JWKS at `jwks_url`; its `iss` must be
+  `issuer`, its `aud` must be or contain `audience`, it must carry `sub`, and
+  `exp` (required) and `nbf` (when present) must hold, give or take a
+  minute. Fluent caches the JWKS for 10 minutes, and fetches it again for an
+  unknown `kid`, at most once a second. `server.public_url` is required.
+
+A rejected request gets `401` with an empty body and
+`WWW-Authenticate: Bearer resource_metadata="{public_url}/.well-known/oauth-protected-resource"`
+(just `Bearer` when there is no `public_url`). In `oidc` mode the metadata
+reads:
+
+```json
+{
+  "resource": "{public_url}/mcp",
+  "authorization_servers": ["{issuer}"],
+  "bearer_methods_supported": ["header"],
+  "scopes_supported": []
+}
+```
+
+The caller's `sub`, and `email` when the token has one, form its principal
+(`sub` is `token` in `token` mode). A session belongs to the principal that
+initialized it; a request on that session authenticated as anyone else is
+refused. Fluent drops the `Authorization` header once the request is
+authenticated and never logs a token. Every session still sees every loaded
+registration.
+
+A request body may be at most 256 KiB (`413` otherwise). To guard against DNS
+rebinding, `/mcp` only answers a `Host` naming `localhost`, a loopback
+address, the listen address or `public_url`'s host (`403` otherwise), so a
+public deployment behind a proxy needs `public_url`.
+
+To try it with MCP Inspector in `token` mode:
+
+```sh
+FLUENT_API_TOKEN=… fluent serve --http --config examples/config/self-hosted.toml
+npx @modelcontextprotocol/inspector --cli http://127.0.0.1:8080/mcp \
+  --transport http --header "Authorization: Bearer $FLUENT_API_TOKEN" --method tools/list
+```
+
+### Connecting ChatGPT
+
+A hosted deployment such as [`examples/config/hosted.toml`](examples/config/hosted.toml)
+runs `fluent serve --http` in `oidc` mode behind TLS at `public_url`. The
+identity provider (the `issuer`) must issue access tokens for `audience` —
+the MCP endpoint, `{public_url}/mcp` — and let ChatGPT register itself as a
+client. Then:
+
+1. In ChatGPT, turn on developer mode (Settings → Apps & Connectors →
+   Advanced settings).
+2. Create a connector and give it the MCP server URL, ending in `/mcp`, for
+   example `https://fluent.tx3.land/mcp`, with OAuth authentication.
+3. ChatGPT reads the `401` challenge and the protected resource metadata,
+   finds the issuer, and sends you through its sign-in. Complete it.
+4. After the server's tools change (new or updated registrations), refresh the
+   connector in ChatGPT's settings so it lists them again.
+
+See OpenAI's [Connect from ChatGPT](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+and the [MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization).
+
 ## Configuration reference
 
 Fluent reads one TOML file, passed with `--config`. **Unknown keys are errors.**
@@ -196,8 +283,8 @@ never serializes it. An empty value counts as unset. Redacted output shows
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `listen` | socket address | `"127.0.0.1:8080"` | Address and port to listen on. |
-| `public_url` | URL | none | Externally visible base URL. |
+| `listen` | socket address | `"127.0.0.1:8080"` | Address and port `serve --http` listens on. |
+| `public_url` | URL | none | Externally visible base URL, advertised in the OAuth metadata. Required in `oidc` mode. |
 
 ### `[registrations]` (required)
 
@@ -232,9 +319,11 @@ All values must be greater than zero.
 
 | `mode` | Keys | Meaning |
 | --- | --- | --- |
-| `"none"` | none | Every caller is accepted. |
+| `"none"` | none | Every caller is accepted; `serve --http` only binds loopback addresses. |
 | `"token"` | `token_env` (variable name, required) | Callers present one static bearer token. |
-| `"oidc"` | `issuer` (URL), `jwks_url` (URL), `audience` (string), all required | Callers present a JWT from an OpenID Connect issuer. |
+| `"oidc"` | `issuer` (URL), `jwks_url` (URL), `audience` (string), all required | Callers present a JWT from an OpenID Connect issuer. Requires `server.public_url`. |
+
+See [Over HTTP](#over-http) for how each mode checks a request.
 
 ### `[store]` (optional)
 
@@ -277,7 +366,8 @@ overrides, so they can hold secrets named by `*_env` keys.
 - [`examples/config/self-hosted.toml`](examples/config/self-hosted.toml):
   a local operator with a bearer token, a devnet and preprod.
 - [`examples/config/hosted.toml`](examples/config/hosted.toml): a public
-  deployment with OIDC, mainnet and preprod, and the site enabled.
+  deployment at `https://fluent.tx3.land` with OIDC from the Tx3 Auth0 tenant,
+  mainnet and preprod, and the site enabled.
 
 ## Registration bundles
 
@@ -561,7 +651,13 @@ Nothing the engine logs contains an argument value or an API key.
   `Arc<Catalog>`, an `Arc<Engine>` and a `ToolScope`), `ToolScope`
   (`visible_slugs`, the registrations one session sees), `AllRegistrations`
   (every loaded one), `INSTRUCTIONS` (at most 512 characters) and
-  `error_json`.
+  `error_json`. `FluentHandler::for_session` gives each HTTP session its own
+  handler, whose `principal()` is the `Principal` that initialized it;
+  `request_principal` reads the one attached to a request.
+- `fluent_server::http`: `HttpServer` (`bind`, `local_addr`, `run`),
+  `router`, `shutdown_signal` and `MAX_BODY_BYTES`; `http::auth`:
+  `Authenticator`, the `require_auth` middleware, `Principal` (`sub`,
+  `email`) and `ProtectedResourceMetadata`.
 
 ## License
 

@@ -5,7 +5,9 @@
 
 [server]
 listen = "0.0.0.0:8080"
-public_url = "https://fluent.example.com"
+# `fluent serve --http` advertises `{public_url}/mcp` as the protected resource
+# and its metadata at `{public_url}/.well-known/oauth-protected-resource`.
+public_url = "https://fluent.tx3.land"
 
 [registrations]
 dir = "/var/lib/fluent/registrations"
@@ -24,11 +26,12 @@ global_cutoff_secs = 45
 max_concurrent_resolutions = 8
 per_user_daily_quota = 200
 
+# Access tokens from the Tx3 Auth0 tenant, issued for the MCP endpoint.
 [auth]
 mode = "oidc"
-issuer = "https://auth.example.com/"
-jwks_url = "https://auth.example.com/.well-known/jwks.json"
-audience = "https://fluent.example.com/mcp"
+issuer = "https://tx3.us.auth0.com/"
+jwks_url = "https://tx3.us.auth0.com/.well-known/jwks.json"
+audience = "https://fluent.tx3.land/mcp"
 
 [store]
 sqlite_path = "/var/lib/fluent/fluent.sqlite"
@@ -38,4 +41,4 @@ enabled = true
 session_secret_env = "FLUENT_SESSION_SECRET"
 oidc_client_id_env = "FLUENT_OIDC_CLIENT_ID"
 oidc_client_secret_env = "FLUENT_OIDC_CLIENT_SECRET"
-redirect_url = "https://fluent.example.com/auth/callback"
+redirect_url = "https://fluent.tx3.land/auth/callback"

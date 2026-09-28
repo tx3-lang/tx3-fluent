@@ -1,13 +1,14 @@
 //! The `fluent` command-line entry point.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use fluent_core::Config;
 use fluent_core::registration::{self, Loaded};
+use fluent_core::{Config, Engine, FluentError, PrepareRequest};
 use serde::Serialize;
+use serde_json::{Value, json};
 use tracing_subscriber::EnvFilter;
 
 /// Tx3 Fluent: prepare Tx3 protocol transactions for agents and wallets.
@@ -29,6 +30,24 @@ enum Command {
     Registrations {
         #[command(subcommand)]
         command: RegistrationsCommand,
+    },
+    /// Prepare one unsigned transaction and print its envelope as JSON, or
+    /// the error as `{"error": {code, message, details}}` with a non-zero
+    /// exit status. Nothing is signed or submitted.
+    Prepare {
+        /// Configuration file to load; `FLUENT_*` environment overrides apply.
+        #[arg(long, value_name = "FILE")]
+        config: PathBuf,
+        /// The registration slug.
+        #[arg(long, value_name = "SLUG")]
+        registration: String,
+        /// The transaction name, as the TII spells it.
+        #[arg(long, value_name = "NAME")]
+        tx: String,
+        /// The arguments, as a JSON object keyed as the transaction's tool
+        /// input schema.
+        #[arg(long, value_name = "JSON")]
+        args: String,
     },
 }
 
@@ -63,7 +82,7 @@ fn main() -> ExitCode {
         .init();
 
     match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::FAILURE
@@ -71,7 +90,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Command::Config {
             command: ConfigCommand::Check { config },
@@ -79,7 +98,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let loaded =
                 Config::load(&config).with_context(|| format!("loading {}", config.display()))?;
             print!("{}", loaded.redacted());
-            Ok(())
+            Ok(ExitCode::SUCCESS)
         }
         Command::Registrations {
             command: RegistrationsCommand::Check { config },
@@ -100,9 +119,72 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     registrations.rejected.len()
                 );
             }
-            Ok(())
+            Ok(ExitCode::SUCCESS)
         }
+        Command::Prepare {
+            config,
+            registration,
+            tx,
+            args,
+        } => prepare(&config, registration, tx, &args),
     }
+}
+
+/// `fluent prepare`: loads the configuration and registrations, prepares one
+/// transaction and prints the envelope or the error as JSON on stdout.
+fn prepare(
+    config: &Path,
+    registration: String,
+    tx: String,
+    args: &str,
+) -> anyhow::Result<ExitCode> {
+    let loaded = Config::load(config).with_context(|| format!("loading {}", config.display()))?;
+    let registrations = registration::load_dir(&loaded.registrations.dir)?;
+    for rejected in &registrations.rejected {
+        eprintln!(
+            "warning: registration bundle {} rejected: {}",
+            rejected.bundle.display(),
+            rejected.error.message()
+        );
+    }
+
+    let result = match serde_json::from_str::<Value>(args) {
+        // The parser's message gives a position, never the text.
+        Err(err) => Err(FluentError::InvalidArguments {
+            reason: format!("--args is not valid JSON: {err}"),
+            arguments: Vec::new(),
+            violations: Vec::new(),
+        }),
+        Ok(args) => {
+            let engine = Engine::new(&loaded, &registrations.catalog);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("starting the async runtime")?;
+            runtime.block_on(engine.prepare(PrepareRequest {
+                registration,
+                tx,
+                args,
+            }))
+        }
+    };
+
+    let (printed, code) = match result {
+        Ok(prepared) => (serde_json::to_value(prepared)?, ExitCode::SUCCESS),
+        Err(err) => (error_json(&err), ExitCode::FAILURE),
+    };
+    println!("{}", serde_json::to_string_pretty(&printed)?);
+    Ok(code)
+}
+
+/// A [`FluentError`] as `{"error": {code, message, details}}`; `details` is
+/// left out when there are none.
+fn error_json(err: &FluentError) -> Value {
+    let mut error = json!({ "code": err.code(), "message": err.message() });
+    if let Some(details) = err.details() {
+        error["details"] = details;
+    }
+    json!({ "error": error })
 }
 
 /// What `registrations check` prints, as TOML.

@@ -43,10 +43,14 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 pallas-addresses = "1.4"
+pallas-codec = "1.4"
+pallas-crypto = "1.4"
 pallas-primitives = "1.4"
-# Tests only: validates arguments against generated tool schemas. No default
+# Validates caller arguments against generated tool schemas. No default
 # features, so no HTTP or file resolution of remote references.
 jsonschema = { version = "0.58", default-features = false }
+# Tests only: a scripted TRP endpoint.
+wiremock = "0.6"
 
 [workspace.lints.rust]
 missing_docs = "warn"

@@ -2,13 +2,16 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use fluent_core::registration::{self, Loaded};
 use fluent_core::{Config, Engine, FluentError, PrepareRequest};
+use fluent_server::mcp::{AllRegistrations, FluentHandler, error_json};
+use rmcp::ServiceExt;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
 /// Tx3 Fluent: prepare Tx3 protocol transactions for agents and wallets.
@@ -54,6 +57,16 @@ enum Command {
         #[arg(long, value_name = "JSON")]
         args: String,
     },
+    /// Serve every loaded registration's tools over MCP. Logs go to stderr
+    /// as JSON lines.
+    Serve {
+        /// Speak MCP over stdin and stdout, the only transport so far.
+        #[arg(long, required = true)]
+        stdio: bool,
+        /// Configuration file to load; `FLUENT_*` environment overrides apply.
+        #[arg(long, value_name = "FILE")]
+        config: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -90,10 +103,14 @@ enum RegistrationsCommand {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
-        .init();
+    let logs = tracing_subscriber::fmt().with_writer(std::io::stderr);
+    if matches!(cli.command, Command::Serve { .. }) {
+        // A server logs its lifecycle unless `RUST_LOG` says otherwise.
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        logs.with_env_filter(filter).json().init();
+    } else {
+        logs.with_env_filter(EnvFilter::from_default_env()).init();
+    }
 
     match run(cli) {
         Ok(code) => code,
@@ -148,7 +165,49 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             tx,
             args,
         } => prepare(&config, registration, tx, &args),
+        Command::Serve { stdio: _, config } => serve(&config),
     }
+}
+
+/// `fluent serve --stdio`: loads the configuration and registrations, then
+/// serves MCP on stdin and stdout until the client closes stdin.
+fn serve(config: &Path) -> anyhow::Result<ExitCode> {
+    let loaded = Config::load(config).with_context(|| format!("loading {}", config.display()))?;
+    let registrations = registration::load_dir(&loaded.registrations.dir)?;
+    for rejected in &registrations.rejected {
+        tracing::warn!(
+            bundle = %rejected.bundle.display(),
+            code = %rejected.error.code(),
+            "registration bundle rejected: {}",
+            rejected.error.message()
+        );
+    }
+    let catalog = Arc::new(registrations.catalog);
+    let engine = Arc::new(Engine::new(&loaded, &catalog));
+    let scope = Arc::new(AllRegistrations::new(&catalog));
+    let handler = FluentHandler::new(Arc::clone(&catalog), engine, scope)
+        .context("building the tool catalog")?;
+    let tools = handler.visible_tools().len();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting the async runtime")?;
+    runtime.block_on(async {
+        tracing::info!(
+            registrations = catalog.len(),
+            tools,
+            "serving MCP over stdio"
+        );
+        let service = handler
+            .serve(rmcp::transport::stdio())
+            .await
+            .context("starting the MCP session")?;
+        let reason = service.waiting().await.context("serving MCP")?;
+        tracing::info!(?reason, "MCP session ended");
+        anyhow::Ok(())
+    })?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `fluent prepare`: loads the configuration and registrations, prepares one
@@ -196,16 +255,6 @@ fn prepare(
     };
     println!("{}", serde_json::to_string_pretty(&printed)?);
     Ok(code)
-}
-
-/// A [`FluentError`] as `{"error": {code, message, details}}`; `details` is
-/// left out when there are none.
-fn error_json(err: &FluentError) -> Value {
-    let mut error = json!({ "code": err.code(), "message": err.message() });
-    if let Some(details) = err.details() {
-        error["details"] = details;
-    }
-    json!({ "error": error })
 }
 
 /// What `registrations check` prints, as TOML.

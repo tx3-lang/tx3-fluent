@@ -9,8 +9,8 @@ user has reviewed the transaction.
 This repository is at an early stage. It holds the workspace layout, the
 contracts shared by every later component (the configuration model, the error
 type and the result envelope), offline address inspection, the registration
-bundle loader, the tool catalog and the transaction preparation engine.
-Registry fetching, transports, authentication, quotas, storage and the site are
+bundle loader, the tool catalog and the transaction preparation engine, and the MCP server over stdio. Registry
+fetching, the HTTP transport, authentication, quotas, storage and the site are
 added later.
 
 ## Layout
@@ -18,7 +18,7 @@ added later.
 | Path | Contents |
 | --- | --- |
 | `crates/fluent-core` | Library: configuration, errors, result envelopes, address inspection, registration bundles, tool catalog, preparation engine and transaction summaries. |
-| `crates/fluent-server` | The `fluent` binary: CLI; later MCP transports, HTTP, store and site. |
+| `crates/fluent-server` | The `fluent` binary: CLI and the MCP server over stdio; later HTTP, store and site. |
 | `examples/config` | Example configurations, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
@@ -124,6 +124,61 @@ Missing credentials are `null`. Byron addresses carry no credentials; their
 `network` comes from the address's network tag when present. `notes` states
 what the address cannot tell, such as which testnet it belongs to. Malformed
 input exits non-zero with an `invalid arguments` error.
+
+## Serving MCP
+
+```sh
+fluent serve --stdio --config fluent.toml
+```
+
+`serve --stdio` loads the configuration and the registrations, then speaks MCP
+on stdin and stdout until the client closes stdin. Logs go to stderr as JSON
+lines (`RUST_LOG` filters them; the default is `info`); stdout carries only
+MCP messages. Rejected bundles are logged and do not stop the others; a
+catalog whose tools cannot be built (see [Tool catalog](#tool-catalog)) stops
+the server at startup.
+
+Every session sees every loaded registration. The server lists the
+[tool catalog](#tool-catalog) and calls a tool by name: a transaction tool
+prepares its transaction (see [Preparing transactions](#preparing-transactions)),
+`fluent_get_skill` returns the registration's skill (a `scope/name` must match
+exactly one registration, otherwise name its slug), and `fluent_inspect_address`
+inspects the address. A result carries the JSON both as `structuredContent` and
+as one text content. A failure is a result with `isError: true` whose text is
+`{"error": {"code", "message", "details"}}`, never a JSON-RPC error; only an
+unknown tool name is. The server reports itself as `tx3-fluent` with the
+crate version, offers the `tools` capability with `listChanged`, and gives the
+client short instructions: call `fluent_get_skill` first, nothing is signed or
+submitted.
+
+To drive it from [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
+(2.x), put the server command after `--`, so Inspector does not take
+`--config` as its own option:
+
+```sh
+npx @modelcontextprotocol/inspector -- fluent serve --stdio --config fluent.toml
+```
+
+Inspector's `--cli` mode reads it the other way round: the server command
+first, then `--` and Inspector's options:
+
+```sh
+npx @modelcontextprotocol/inspector --cli fluent serve --stdio --config fluent.toml \
+  -- --method tools/call --tool-name fluent_get_skill --tool-arg protocol=transfer_preprod
+```
+
+A desktop client registers the same command, for example:
+
+```json
+{
+  "mcpServers": {
+    "tx3-fluent": {
+      "command": "fluent",
+      "args": ["serve", "--stdio", "--config", "/path/to/fluent.toml"]
+    }
+  }
+}
+```
 
 ## Configuration reference
 
@@ -458,6 +513,11 @@ Nothing the engine logs contains an argument value or an API key.
   `Engine::prepare(PrepareRequest)`, `ArgumentRules` (the argument checks of
   one transaction) and `resolver::SCRIPT_LOG_LINES`.
 - `fluent_core::summary`: `decode(tx_hex) -> Summary { tx_hash, transaction }`.
+- `fluent_server::mcp`: `FluentHandler` (the rmcp `ServerHandler` over an
+  `Arc<Catalog>`, an `Arc<Engine>` and a `ToolScope`), `ToolScope`
+  (`visible_slugs`, the registrations one session sees), `AllRegistrations`
+  (every loaded one), `INSTRUCTIONS` (at most 512 characters) and
+  `error_json`.
 
 ## License
 

@@ -13,8 +13,10 @@ fn fixtures(dir: &str) -> PathBuf {
         .join(dir)
 }
 
-fn load(dir: &Path) -> Loaded {
-    load_dir(dir).unwrap_or_else(|err| panic!("{}: {err}", dir.display()))
+async fn load(dir: &Path) -> Loaded {
+    load_dir(dir)
+        .await
+        .unwrap_or_else(|err| panic!("{}: {err}", dir.display()))
 }
 
 /// Values computed outside Fluent, from the fixture directory:
@@ -65,10 +67,10 @@ fn assert_matches(registration: &Registration, expected: &Expected) {
     assert_eq!(registration.revision(), expected.revision);
 }
 
-#[test]
-fn valid_bundles_load_with_independently_computed_digests() {
+#[tokio::test]
+async fn valid_bundles_load_with_independently_computed_digests() {
     let dir = fixtures("valid");
-    let loaded = load(&dir);
+    let loaded = load(&dir).await;
     assert!(loaded.rejected.is_empty(), "{:?}", loaded.rejected);
 
     let catalog = &loaded.catalog;
@@ -80,16 +82,16 @@ fn valid_bundles_load_with_independently_computed_digests() {
         assert_matches(registration, expected);
         assert_eq!(registration.bundle(), dir.join(expected.slug));
         assert_matches(
-            &Registration::load(dir.join(expected.slug)).unwrap(),
+            &Registration::load(dir.join(expected.slug)).await.unwrap(),
             expected,
         );
     }
     assert!(catalog.get("transfer").is_none());
 }
 
-#[test]
-fn loaded_registrations_expose_tii_and_skill() {
-    let loaded = load(&fixtures("valid"));
+#[tokio::test]
+async fn loaded_registrations_expose_tii_and_skill() {
+    let loaded = load(&fixtures("valid")).await;
 
     let strike = loaded.catalog.get("strike_staking_mainnet").unwrap();
     let mut txs: Vec<&str> = strike
@@ -118,10 +120,10 @@ fn loaded_registrations_expose_tii_and_skill() {
     assert_eq!(transfer.tii().protocol.name, "unknown");
 }
 
-#[test]
-fn every_invalid_fixture_is_rejected_with_its_rule() {
+#[tokio::test]
+async fn every_invalid_fixture_is_rejected_with_its_rule() {
     let dir = fixtures("invalid");
-    let loaded = load(&dir);
+    let loaded = load(&dir).await;
     assert!(loaded.catalog.is_empty());
 
     let expected = [
@@ -172,10 +174,10 @@ fn every_invalid_fixture_is_rejected_with_its_rule() {
     }
 }
 
-#[test]
-fn duplicate_slugs_reject_every_claimant() {
+#[tokio::test]
+async fn duplicate_slugs_reject_every_claimant() {
     let dir = fixtures("duplicate_slug");
-    let loaded = load(&dir);
+    let loaded = load(&dir).await;
     assert!(loaded.catalog.is_empty());
     assert_eq!(loaded.rejected.len(), 2, "{:?}", loaded.rejected);
 
@@ -231,8 +233,8 @@ fn edit(path: PathBuf, from: &str, to: &str) {
     fs::write(&path, text.replacen(from, to, 1)).expect("write bundle file");
 }
 
-fn rejection(bundle: &Path) -> String {
-    let Err(err) = Registration::load(bundle) else {
+async fn rejection(bundle: &Path) -> String {
+    let Err(err) = Registration::load(bundle).await else {
         panic!("{} loaded", bundle.display());
     };
     let message = err.message();
@@ -241,8 +243,8 @@ fn rejection(bundle: &Path) -> String {
     message
 }
 
-#[test]
-fn rejects_bundles_that_break_the_other_rules() {
+#[tokio::test]
+async fn rejects_bundles_that_break_the_other_rules() {
     let dir = scratch("other-rules");
     let digest = "sha256:8d5d715f300e618373b588af96f0cfb9b0a3904b3a34fc0038f72ebb1695da31";
 
@@ -250,12 +252,13 @@ fn rejects_bundles_that_break_the_other_rules() {
     edit(bundle.join("registration.toml"), "8d5d715f", "0d5d715f");
     assert!(
         rejection(&bundle)
+            .await
             .contains("TII digest mismatch: registration.toml declares sha256:0d5d715f")
     );
 
     let bundle = transfer_copy(&dir, "protocol");
     edit(bundle.join("registration.toml"), "\"0.0.1\"", "\"0.0.2\"");
-    assert!(rejection(&bundle).contains(
+    assert!(rejection(&bundle).await.contains(
         "protocol mismatch: registration.toml declares unknown/unknown:0.0.2, \
          the TII declares unknown/unknown:0.0.1"
     ));
@@ -266,7 +269,7 @@ fn rejects_bundles_that_break_the_other_rules() {
         "[skill]",
         "[skill]\nsha = 1",
     );
-    let message = rejection(&bundle);
+    let message = rejection(&bundle).await;
     assert!(
         message.contains("invalid registration.toml: line 15: unknown field `sha`"),
         "{message}"
@@ -278,7 +281,11 @@ fn rejects_bundles_that_break_the_other_rules() {
         "\"transfer_preprod\"",
         "\"T\"",
     );
-    assert!(rejection(&bundle).contains("invalid registration.toml: slug `T` must match"));
+    assert!(
+        rejection(&bundle)
+            .await
+            .contains("invalid registration.toml: slug `T` must match")
+    );
 
     let bundle = transfer_copy(&dir, "escape");
     edit(
@@ -286,29 +293,47 @@ fn rejects_bundles_that_break_the_other_rules() {
         "\"SKILL.md\"",
         "\"../SKILL.md\"",
     );
-    assert!(rejection(&bundle).contains("skill.path must be a relative path inside the bundle"));
+    assert!(
+        rejection(&bundle)
+            .await
+            .contains("skill.path must be a relative path inside the bundle")
+    );
 
     let bundle = transfer_copy(&dir, "no_manifest");
     fs::remove_file(bundle.join("registration.toml")).unwrap();
-    assert!(rejection(&bundle).contains("cannot read registration.toml"));
+    assert!(
+        rejection(&bundle)
+            .await
+            .contains("cannot read registration.toml")
+    );
 
     let bundle = transfer_copy(&dir, "no_tii");
     fs::remove_file(bundle.join("protocol.tii")).unwrap();
-    assert!(rejection(&bundle).contains("cannot read TII protocol.tii"));
+    assert!(
+        rejection(&bundle)
+            .await
+            .contains("cannot read TII protocol.tii")
+    );
 
     let bundle = transfer_copy(&dir, "no_skill");
     fs::remove_file(bundle.join("SKILL.md")).unwrap();
-    assert!(rejection(&bundle).contains("cannot read skill SKILL.md"));
+    assert!(
+        rejection(&bundle)
+            .await
+            .contains("cannot read skill SKILL.md")
+    );
 
     let bundle = transfer_copy(&dir, "no_frontmatter");
     fs::write(bundle.join("SKILL.md"), "# Transfer\n").unwrap();
     assert!(
-        rejection(&bundle).contains("invalid skill SKILL.md: must start with YAML frontmatter")
+        rejection(&bundle)
+            .await
+            .contains("invalid skill SKILL.md: must start with YAML frontmatter")
     );
 
     let bundle = transfer_copy(&dir, "skill_fields");
     edit(bundle.join("SKILL.md"), "revision: 1", "revision: first");
-    let message = rejection(&bundle);
+    let message = rejection(&bundle).await;
     assert!(
         message.contains("invalid skill SKILL.md: invalid frontmatter:"),
         "{message}"
@@ -326,7 +351,7 @@ fn rejects_bundles_that_break_the_other_rules() {
         "network: preview",
     );
     edit(bundle.join("SKILL.md"), "[transfer]", "[transfer, swap]");
-    assert!(rejection(&bundle).contains(
+    assert!(rejection(&bundle).await.contains(
         "incompatible skill binding: skill protocol is acme/transfer:0.1.0, the registration is \
          unknown/unknown:0.0.1; skill network is preview, the registration serves preprod; \
          skill dependency `sender_address` is required for `swap`, which the TII does not define"
@@ -340,31 +365,29 @@ fn rejects_bundles_that_break_the_other_rules() {
         &format!("tii_digest = \"{digest}\""),
         "",
     );
-    Registration::load(&bundle).unwrap();
+    Registration::load(&bundle).await.unwrap();
 }
 
-#[test]
-fn registry_bundles_carry_no_tii_and_cannot_be_fetched_yet() {
+#[tokio::test]
+async fn registry_bundles_must_not_carry_a_tii() {
     let dir = scratch("registry");
     let bundle = transfer_copy(&dir, "registry");
     edit(
         bundle.join("registration.toml"),
         "source = \"local\"",
-        "source = \"registry\"\n\n[protocol.registry]\nurl = \"https://oci.tx3.land\"\n\
+        "source = \"registry\"\n\n[protocol.registry]\nurl = \"http://127.0.0.1:9\"\n\
          ref = \"open-tx3/transfer:0.1.0\"\nmanifest_digest = \
          \"sha256:b7b32dfa0fb9eda772700f8ba01a4d76084b2ea2e5883cf721db2505c6b35e77\"",
     );
-    assert!(rejection(&bundle).contains(
+    // Rejected before any fetch; nothing listens on the registry URL anyway.
+    assert!(rejection(&bundle).await.contains(
         "a registry-sourced bundle must not carry protocol.tii: its TII comes only from the \
          registry"
     ));
-
-    fs::remove_file(bundle.join("protocol.tii")).unwrap();
-    assert!(rejection(&bundle).contains("source = \"registry\" is not supported yet"));
 }
 
-#[test]
-fn a_rejected_bundle_does_not_stop_the_others() {
+#[tokio::test]
+async fn a_rejected_bundle_does_not_stop_the_others() {
     let dir = scratch("mixed");
     transfer_copy(&dir, "good");
     let bad = transfer_copy(&dir, "bad");
@@ -378,7 +401,7 @@ fn a_rejected_bundle_does_not_stop_the_others() {
     fs::write(dir.join(".cache/ignored.tii"), "not json").unwrap();
     fs::write(dir.join("README.md"), "Registrations for this host.\n").unwrap();
 
-    let loaded = load(&dir);
+    let loaded = load(&dir).await;
     let slugs: Vec<&str> = loaded.catalog.iter().map(|r| r.slug()).collect();
     assert_eq!(slugs, ["transfer_preprod"]);
     assert_eq!(loaded.rejected.len(), 1);
@@ -391,10 +414,10 @@ fn a_rejected_bundle_does_not_stop_the_others() {
     );
 }
 
-#[test]
-fn an_unreadable_directory_fails_the_load() {
+#[tokio::test]
+async fn an_unreadable_directory_fails_the_load() {
     let dir = fixtures("does-not-exist");
-    let err = load_dir(&dir).unwrap_err();
+    let err = load_dir(&dir).await.unwrap_err();
     assert_eq!(err.code(), ErrorCode::RegistrationUnavailable);
     let message = err.message();
     assert!(message.contains(&dir.display().to_string()), "{message}");

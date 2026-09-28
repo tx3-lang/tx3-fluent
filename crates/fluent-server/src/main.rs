@@ -45,8 +45,9 @@ enum ConfigCommand {
 
 #[derive(Debug, Subcommand)]
 enum RegistrationsCommand {
-    /// Load every bundle in `[registrations].dir` and print each registration,
-    /// or why its bundle was rejected. Fails when any bundle is rejected.
+    /// Load every bundle in `[registrations].dir`, fetching registry-sourced
+    /// TII, and print each registration, or why its bundle was rejected. Fails
+    /// when any bundle is rejected.
     Check {
         /// Configuration file to load; `FLUENT_*` environment overrides apply.
         #[arg(long, value_name = "FILE")]
@@ -54,7 +55,8 @@ enum RegistrationsCommand {
     },
 }
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()
@@ -62,7 +64,7 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    match run(cli) {
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -71,7 +73,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Config {
             command: ConfigCommand::Check { config },
@@ -87,7 +89,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let loaded =
                 Config::load(&config).with_context(|| format!("loading {}", config.display()))?;
             let dir = &loaded.registrations.dir;
-            let registrations = registration::load_dir(dir)?;
+            let registrations = registration::load_dir(dir).await?;
             print!("{}", RegistrationsReport::new(&registrations).to_toml()?);
 
             let total = registrations.catalog.len() + registrations.rejected.len();
@@ -124,6 +126,24 @@ struct RegistrationRow {
     tii_digest: String,
     skill_digest: String,
     bundle: String,
+    /// Registry-sourced registrations only; last, because TOML writes tables
+    /// after plain values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provenance: Option<ProvenanceRow>,
+}
+
+/// Where a registry-sourced TII came from. Recorded, not a verified
+/// publisher identity.
+#[derive(Serialize)]
+struct ProvenanceRow {
+    registry_url: String,
+    #[serde(rename = "ref")]
+    reference: String,
+    manifest_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_revision: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -147,6 +167,13 @@ impl RegistrationsReport {
                 tii_digest: r.tii_digest().to_string(),
                 skill_digest: r.skill_digest().to_string(),
                 bundle: r.bundle().display().to_string(),
+                provenance: r.provenance().map(|p| ProvenanceRow {
+                    registry_url: p.registry_url.clone(),
+                    reference: p.reference.clone(),
+                    manifest_digest: p.manifest_digest.clone(),
+                    source_digest: p.source_digest.clone(),
+                    source_revision: p.source_revision.clone(),
+                }),
             })
             .collect();
         let rejected = loaded

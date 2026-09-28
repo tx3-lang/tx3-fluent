@@ -29,9 +29,21 @@ fn fixture(path: &str) -> PathBuf {
         .join(path)
 }
 
+/// Runs a loader future to completion. The fixtures are local bundles, so
+/// nothing is fetched.
+fn block_on<F: Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(future)
+}
+
 fn tools_for(bundle: &str) -> Vec<ToolDescriptor> {
-    let registration = Registration::load(fixture(&format!("registrations/valid/{bundle}")))
-        .unwrap_or_else(|err| panic!("{bundle}: {err}"));
+    let registration = block_on(Registration::load(fixture(&format!(
+        "registrations/valid/{bundle}"
+    ))))
+    .unwrap_or_else(|err| panic!("{bundle}: {err}"));
     build_tools(&registration).unwrap_or_else(|err| panic!("{bundle}: {err}"))
 }
 
@@ -316,7 +328,7 @@ fn complex_types_are_inlined() {
 
 #[test]
 fn all_tools_lists_fixed_then_registration_tools() {
-    let loaded = load_dir(fixture("registrations/valid")).unwrap();
+    let loaded = block_on(load_dir(fixture("registrations/valid"))).unwrap();
     assert!(loaded.rejected.is_empty());
     let names: Vec<String> = all_tools(&loaded.catalog)
         .unwrap()

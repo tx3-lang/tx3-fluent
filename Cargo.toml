@@ -44,9 +44,14 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 pallas-addresses = "1.4"
 pallas-primitives = "1.4"
+# Anonymous pulls of registry artifacts over rustls; no test-registry helpers.
+oci-client = { version = "0.18", default-features = false, features = ["rustls-tls"] }
+futures-util = "0.3"
 # Tests only: validates arguments against generated tool schemas. No default
 # features, so no HTTP or file resolution of remote references.
 jsonschema = { version = "0.58", default-features = false }
+# Tests only: a fake OCI registry.
+wiremock = "0.6"
 
 [workspace.lints.rust]
 missing_docs = "warn"

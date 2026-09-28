@@ -1,0 +1,165 @@
+[
+  {
+    "name": "fluent_get_skill",
+    "title": "Get protocol skill",
+    "description": "Returns the consumption skill of a registered protocol: how to use its transactions, what to obtain elsewhere first, and the registration and network it applies to. Call it before any transaction tool of that protocol.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "description": "A registration slug, such as strike_staking_mainnet, or a protocol as scope/name, such as strike-finance/strike-staking.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "The result of `fluent_get_skill`: a registration's consumption skill.",
+      "properties": {
+        "dependencies": {
+          "description": "What the assistant must obtain outside Fluent, and for which transactions.",
+          "items": {
+            "additionalProperties": false,
+            "description": "Something a skill needs from outside Fluent, and the transactions that need\nit.",
+            "properties": {
+              "description": {
+                "description": "What the dependency is and how to obtain it.",
+                "type": "string"
+              },
+              "id": {
+                "description": "Stable identifier of the dependency.",
+                "type": "string"
+              },
+              "required_for": {
+                "description": "Names of the transactions that need it.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "description",
+              "required_for"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "markdown": {
+          "description": "The skill's Markdown body.",
+          "type": "string"
+        },
+        "protocol": {
+          "additionalProperties": false,
+          "description": "The registration the skill is bound to.",
+          "properties": {
+            "name": {
+              "description": "The protocol name within its scope.",
+              "type": "string"
+            },
+            "network": {
+              "description": "The network the registration serves.",
+              "oneOf": [
+                {
+                  "const": "mainnet",
+                  "description": "Cardano mainnet.",
+                  "type": "string"
+                },
+                {
+                  "const": "preprod",
+                  "description": "The preprod testnet.",
+                  "type": "string"
+                },
+                {
+                  "const": "preview",
+                  "description": "The preview testnet.",
+                  "type": "string"
+                }
+              ]
+            },
+            "registration_revision": {
+              "description": "The registration revision.",
+              "type": "string"
+            },
+            "registration_slug": {
+              "description": "The slug of the registration.",
+              "type": "string"
+            },
+            "scope": {
+              "description": "The registry scope that publishes the protocol.",
+              "type": "string"
+            },
+            "version": {
+              "description": "The protocol version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope",
+            "name",
+            "version",
+            "registration_slug",
+            "registration_revision",
+            "network"
+          ],
+          "type": "object"
+        },
+        "skill_revision": {
+          "description": "The skill's own revision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "protocol",
+        "skill_revision",
+        "dependencies",
+        "markdown"
+      ],
+      "title": "SkillResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "fluent_inspect_address",
+    "title": "Inspect Cardano address",
+    "description": "Reports the network, kind and credentials of a Cardano address, for example to derive a key hash argument or to check that an address belongs to the expected network. It makes no chain queries.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "description": "The address to inspect: bech32 (addr1…, addr_test1…, stake1…), hex, or base58 for Byron.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "address"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "title": "AddressReport",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  }
+]

@@ -44,6 +44,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 pallas-addresses = "1.4"
 pallas-primitives = "1.4"
+# Tests only: validates arguments against generated tool schemas. No default
+# features, so no HTTP or file resolution of remote references.
+jsonschema = { version = "0.58", default-features = false }
 
 [workspace.lints.rust]
 missing_docs = "warn"

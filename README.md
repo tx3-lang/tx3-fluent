@@ -8,20 +8,21 @@ user has reviewed the transaction.
 
 This repository is at an early stage. It holds the workspace layout, the
 contracts shared by every later component (the configuration model, the error
-type and the result envelope), the registration bundle loader and the tool
-catalog. Registry fetching, resolution, transports, authentication, storage and
-the site are added later.
+type and the result envelope), the registration bundle loader, the tool catalog
+and the transaction preparation engine. Registry fetching, transports,
+authentication, quotas, storage and the site are added later.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
-| `crates/fluent-core` | Library: configuration, errors, result envelopes, registration bundles, tool catalog; later engine and address utilities. |
+| `crates/fluent-core` | Library: configuration, errors, result envelopes, registration bundles, tool catalog, preparation engine and transaction summaries; later address utilities. |
 | `crates/fluent-server` | The `fluent` binary: CLI; later MCP transports, HTTP, store and site. |
 | `examples/config` | Example configurations, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
 | `crates/fluent-core/tests/golden` | Reviewed tool descriptor lists the catalog tests compare against. |
+| `crates/fluent-core/tests/fixtures/tx` | Real preprod transactions (CBOR hex) with their expected summaries, checked against the chain explorer. |
 
 ## Build and test
 
@@ -37,6 +38,21 @@ cargo test --all-targets --all-features
 
 CI runs the last three on every pull request and push to `main`; each job
 blocks.
+
+`crates/fluent-core/tests/live_preprod.rs` prepares a transfer against a live
+preprod resolver. It skips green unless `FLUENT_TRP_URL_PREPROD` is set; then
+it needs `TEST_PARTY_A_ADDRESS` (a funded sender) and `TEST_PARTY_B_ADDRESS`
+(the receiver), and sends `FLUENT_TRP_API_KEY_PREPROD` as the API key when it
+is set. It only resolves: nothing is signed or submitted.
+
+```sh
+FLUENT_TRP_URL_PREPROD=https://cardano-preprod.trp-m1.demeter.run \
+FLUENT_TRP_API_KEY_PREPROD=… TEST_PARTY_A_ADDRESS=addr_test1… TEST_PARTY_B_ADDRESS=addr_test1… \
+cargo test -p fluent-core --test live_preprod -- --nocapture
+```
+
+The CI job `live preprod` runs it with the organization secrets of the same
+names, against the endpoint above.
 
 ## Usage
 
@@ -58,6 +74,19 @@ fluent registrations check --config examples/config/self-hosted.toml
 registration (slug, protocol, network, profile, revision, digests, bundle) and
 one `[[rejected]]` table per rejected bundle (bundle, error code, message). It
 exits non-zero when any bundle is rejected or the directory cannot be read.
+
+```sh
+fluent prepare --config fluent.toml \
+  --registration transfer_preprod --tx transfer \
+  --args '{"quantity": 2000000, "sender": "addr_test1…", "receiver": "addr_test1…", "middleman": "addr_test1…"}'
+```
+
+`prepare` loads the configuration and the registrations, prepares one
+transaction (see [Preparing transactions](#preparing-transactions)) and prints
+the `PreparedTransaction` envelope as JSON. On failure it prints
+`{"error": {"code", "message", "details"}}` instead (`details` only when there
+are some) and exits non-zero. Rejected bundles are reported on stderr and do
+not stop the others. Nothing is signed or submitted.
 
 ## Configuration reference
 
@@ -299,6 +328,65 @@ error for the whole catalog.
 | `fluent_get_skill` | `{ protocol }`: a registration slug or `scope/name` | `{ protocol: { scope, name, version, registration_slug, registration_revision, network }, skill_revision, dependencies, markdown }` | read-only, idempotent, closed world |
 | `fluent_inspect_address` | `{ address }` | an `AddressReport` object | read-only, idempotent, closed world |
 
+## Preparing transactions
+
+`fluent_core::Engine` is built once at startup from the configuration and the
+loaded registrations. For each registration it builds one Rust SDK client
+(`Protocol::client()`) against the TRP endpoint of the registration's network
+(`[networks.<network>].trp_url`), with the `dmtr-api-key` header when that
+network's `trp_api_key_env` is set, and with the deployment profile selected.
+A registration whose network has no `[networks]` table is kept and answered
+with `network_mismatch`.
+
+`Engine::prepare(PrepareRequest { registration, tx, args })`:
+
+1. Finds the registration by slug (`unknown_protocol`) and the transaction by
+   its TII name (`unknown_transaction`).
+2. Rejects any argument named like a party or environment field the profile
+   binds, compared in lowercase (`invalid_arguments`, "deployment-bound value
+   cannot be overridden").
+3. Validates the arguments against the transaction's tool
+   [input schema](#tool-catalog) with the `jsonschema` crate, so unknown keys,
+   missing required arguments, wrong types and broken patterns are rejected
+   (`invalid_arguments`). `details.violations` lists `{ path, message }` per
+   violation, where `path` is a JSON Pointer into the arguments and the
+   message never quotes the value.
+4. Binds each party argument with `Party::address`, passes the rest as
+   arguments, and resolves. The SDK adds the profile's environment values and
+   encodes every argument (`tii::encode`). The call is bounded by
+   `limits.resolver_timeout_secs` (`resolver_timeout`).
+5. Decodes the returned CBOR into the summary (below) and compares the
+   resolver's transaction hash with the Blake2b-256 of the body bytes. A
+   difference is `internal`, with both hashes in `details`.
+
+Resolver errors are classified as follows. Details never carry an address,
+an amount, a UTxO or an argument value.
+
+| TRP / SDK error | Code | Details |
+| --- | --- | --- |
+| `InputNotResolved` whose query has a `min_amount` | `insufficient_funds` | `input`; `query.has_address`, `query.refs` (count); `search_space.matched` (count) |
+| `InputNotResolved` without one | `input_not_resolved` | as above |
+| `TxScriptFailure` | `script_failure` | `logs`: the first 20 lines |
+| `MissingTxArg` | `invalid_arguments` | the argument name |
+| `UnsupportedTir` | `registration_unavailable` | |
+| `NetworkError`, `HttpError` | `resolver_unavailable` | `network`; `status` when the resolver answered |
+| timeout | `resolver_timeout` | `timeout_secs` |
+| unknown transaction | `unknown_transaction` | |
+| `InvalidTirEnvelope`, `InvalidTirBytes`, `UnsupportedTxEra` | `registration_unavailable` | |
+| `DeserializationError`, other JSON-RPC errors, `UnknownError`, `UnsupportedEra` | `resolver_unavailable` | `network` |
+| an argument the SDK cannot encode, an unknown party | `invalid_arguments` | |
+
+`fluent_core::summary::decode(tx_hex)` is a pure function over the CBOR alone,
+never the arguments, so the summary is an independent check of what the
+resolver built. It reads one complete Conway-era transaction and returns its
+hash (Blake2b-256 of the body bytes) and a `TransactionSummary`: inputs as
+`<tx_hash>#<index>`; outputs with bech32 addresses (base58 for Byron),
+lovelace and native assets; the fee; minted (positive) and burned (negative)
+assets; the validity interval; and the required signers. Anything else is an
+`internal` error.
+
+Nothing the engine logs contains an argument value or an API key.
+
 ## Shared contracts
 
 - `fluent_core::config::Config`: the model above; `Config::load`,
@@ -309,7 +397,9 @@ error for the whole catalog.
   `input_not_resolved`, `script_failure`, `resolver_timeout`,
   `resolver_unavailable`, `quota_exhausted`, `unauthorized`, `internal`),
   `message()` is for people, and `details()` is optional JSON. None of them
-  contains credentials or complete argument values.
+  contains credentials or complete argument values. `Violation`
+  (`path`, `message`) and `InputDiagnostic` (counts only) carry the
+  structured details of `invalid_arguments` and unresolved inputs.
 - `fluent_core::envelope::PreparedTransaction`: the unsigned-transaction
   result. `status`, `signed`, `submitted` and `next_steps` are fixed values, and
   it derives `schemars::JsonSchema` for use as an MCP output schema.
@@ -323,6 +413,10 @@ error for the whole catalog.
   `all_tools(&Catalog)` returns both and rejects duplicate names.
   `catalog::schema::inline` is the pure `$ref` inliner, and `SkillResult` is
   the `fluent_get_skill` result.
+- `fluent_core::engine`: `Engine::new(&Config, &Catalog)`,
+  `Engine::prepare(PrepareRequest)`, `ArgumentRules` (the argument checks of
+  one transaction) and `resolver::SCRIPT_LOG_LINES`.
+- `fluent_core::summary`: `decode(tx_hex) -> Summary { tx_hash, transaction }`.
 
 ## License
 

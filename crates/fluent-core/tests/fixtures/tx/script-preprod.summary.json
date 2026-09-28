@@ -1,0 +1,40 @@
+{
+  "tx_hash": "c818eef55d1cb3a408ec013068d095afb06253217df2db2dc547dea9511cf0b2",
+  "transaction": {
+    "inputs": [
+      {
+        "ref": "2824b5c66df2ab09664b1a746bc80c4b6e37126ab1cf9069550a9a1fb7bdcba8#0"
+      },
+      {
+        "ref": "2824b5c66df2ab09664b1a746bc80c4b6e37126ab1cf9069550a9a1fb7bdcba8#1"
+      }
+    ],
+    "outputs": [
+      {
+        "address": "addr_test1wp338kzp70sajpk44pldjyz8896g5yl9pnfrhugr6jyremsz6nwpp",
+        "lovelace": 1810200,
+        "assets": [
+          {
+            "policy_id": "19eb22bf803ab40b064da4ac8e8fb5853ae0454ba0593609598410ba",
+            "asset_name_hex": "446a65644f7261636c654e4654",
+            "amount": 1
+          }
+        ]
+      },
+      {
+        "address": "addr_test1qrc2ym7pwzkc9dj284paahsgu782dcsz3dgszpvdqf36szjvpmpraw365fayhrtpzpl4nulq6f9hhdkh4cdyh0tgnjxsaxg4ak",
+        "lovelace": 8278224016,
+        "assets": []
+      }
+    ],
+    "fee_lovelace": 270537,
+    "mint": [],
+    "validity": {
+      "from_slot": 134872999,
+      "until_slot": 134873899
+    },
+    "required_signers": [
+      "f0a26fc170ad82b64a3d43dede08e78ea6e2028b5101058d0263a80a"
+    ]
+  }
+}

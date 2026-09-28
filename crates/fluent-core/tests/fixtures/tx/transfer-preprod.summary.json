@@ -1,0 +1,29 @@
+{
+  "tx_hash": "b2698db18245555a24e2e38a1a1c1a9623465aacf28b19ac93f9287093e58f73",
+  "transaction": {
+    "inputs": [
+      {
+        "ref": "19ff54abb13cf52ee0ba3008e67c5003abab8bed30043835667c5da60d7d26a7#2"
+      },
+      {
+        "ref": "7053cd32e53e0d8e570851c743765a3ed545f21a08c4566b977f2de72b94e78e#2"
+      }
+    ],
+    "outputs": [
+      {
+        "address": "addr_test1qpwms9gqr76nar77cja9yq6dl44zdn3wflmd96h4wp3ae9yzg29hdhjxjuf3jpgqq2df60v0aq63dn96ey9mh6njcatsdynmak",
+        "lovelace": 3000000,
+        "assets": []
+      },
+      {
+        "address": "addr_test1qrxchm0g4la6hqfd9wq6vuuldx7l20az52t7lvgpgujr8pvwmpzru5kuf4mpmvtaf0hlsjtz7t4r2h7tj9v3c02dhljq0wqkef",
+        "lovelace": 2852207,
+        "assets": []
+      }
+    ],
+    "fee_lovelace": 169725,
+    "mint": [],
+    "validity": {},
+    "required_signers": []
+  }
+}

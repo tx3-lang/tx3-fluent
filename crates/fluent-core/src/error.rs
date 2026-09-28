@@ -91,6 +91,48 @@ impl std::fmt::Display for ErrorCode {
     }
 }
 
+/// One way the caller's arguments break a transaction's input schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Violation {
+    /// JSON Pointer to the offending value within the arguments, such as
+    /// `/quantity`; empty for the arguments object itself.
+    pub path: String,
+    /// What is wrong, phrased without quoting the value.
+    pub message: String,
+}
+
+/// What the resolver reported about a transaction input it could not
+/// resolve, reduced to counts: never an address, an amount or a UTxO.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputDiagnostic {
+    /// Whether the input's query named an address.
+    pub has_address: bool,
+    /// How many UTxO references the query named.
+    pub refs: usize,
+    /// How many UTxOs of the search space matched the query.
+    pub matched: usize,
+}
+
+impl InputDiagnostic {
+    fn details(input: Option<&String>, diagnostic: Option<&InputDiagnostic>) -> Option<Value> {
+        if input.is_none() && diagnostic.is_none() {
+            return None;
+        }
+        let mut details = json!({});
+        if let Some(input) = input {
+            details["input"] = json!(input);
+        }
+        if let Some(diagnostic) = diagnostic {
+            details["query"] = json!({
+                "has_address": diagnostic.has_address,
+                "refs": diagnostic.refs,
+            });
+            details["search_space"] = json!({ "matched": diagnostic.matched });
+        }
+        Some(details)
+    }
+}
+
 /// A failure reported to a Fluent caller.
 ///
 /// Construct variants with identifiers and names only; never place a credential
@@ -104,6 +146,8 @@ pub enum FluentError {
         reason: String,
         /// Names of the offending arguments.
         arguments: Vec<String>,
+        /// Each way the arguments break the input schema; may be empty.
+        violations: Vec<Violation>,
     },
 
     /// The protocol exists but has no transaction with the requested name.
@@ -150,6 +194,8 @@ pub enum FluentError {
     InsufficientFunds {
         /// The transaction input that could not be funded, when known.
         input: Option<String>,
+        /// What the resolver reported about the input, when it did.
+        diagnostic: Option<InputDiagnostic>,
     },
 
     /// The resolver could not find UTxOs matching a transaction input.
@@ -157,6 +203,8 @@ pub enum FluentError {
     InputNotResolved {
         /// The transaction input that could not be resolved, when known.
         input: Option<String>,
+        /// What the resolver reported about the input, when it did.
+        diagnostic: Option<InputDiagnostic>,
     },
 
     /// A validator script rejected the transaction.
@@ -178,6 +226,8 @@ pub enum FluentError {
     ResolverUnavailable {
         /// The network whose resolver failed.
         network: String,
+        /// The HTTP status the resolver answered with, when it answered.
+        status: Option<u16>,
     },
 
     /// The caller has used their request quota.
@@ -198,6 +248,9 @@ pub enum FluentError {
         /// The underlying failure.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
+        /// Identifiers that help report the failure, such as two transaction
+        /// hashes that should have been equal; never the source's text.
+        details: Option<Value>,
     },
 }
 
@@ -221,6 +274,19 @@ impl FluentError {
     pub fn internal(source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
         FluentError::Internal {
             source: source.into(),
+            details: None,
+        }
+    }
+
+    /// Wraps an unexpected failure as [`FluentError::Internal`] with
+    /// `details` for the caller. `details` must hold identifiers only.
+    pub fn internal_with_details(
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+        details: Value,
+    ) -> Self {
+        FluentError::Internal {
+            source: source.into(),
+            details: Some(details),
         }
     }
 
@@ -254,8 +320,16 @@ impl FluentError {
     /// never credentials or complete argument values.
     pub fn details(&self) -> Option<Value> {
         match self {
-            FluentError::InvalidArguments { arguments, .. } => {
-                Some(json!({ "arguments": arguments }))
+            FluentError::InvalidArguments {
+                arguments,
+                violations,
+                ..
+            } => {
+                let mut details = json!({ "arguments": arguments });
+                if !violations.is_empty() {
+                    details["violations"] = json!(violations);
+                }
+                Some(details)
             }
             FluentError::UnknownTransaction {
                 protocol,
@@ -276,16 +350,24 @@ impl FluentError {
                 }
                 Some(details)
             }
-            FluentError::InsufficientFunds { input } | FluentError::InputNotResolved { input } => {
-                input.as_ref().map(|input| json!({ "input": input }))
+            FluentError::InsufficientFunds { input, diagnostic }
+            | FluentError::InputNotResolved { input, diagnostic } => {
+                InputDiagnostic::details(input.as_ref(), diagnostic.as_ref())
             }
             FluentError::ScriptFailure { logs } => Some(json!({ "logs": logs })),
             FluentError::ResolverTimeout { timeout_secs } => {
                 Some(json!({ "timeout_secs": timeout_secs }))
             }
-            FluentError::ResolverUnavailable { network } => Some(json!({ "network": network })),
+            FluentError::ResolverUnavailable { network, status } => {
+                let mut details = json!({ "network": network });
+                if let Some(status) = status {
+                    details["status"] = json!(status);
+                }
+                Some(details)
+            }
             FluentError::QuotaExhausted { limit } => Some(json!({ "limit": limit })),
-            FluentError::Unauthorized | FluentError::Internal { .. } => None,
+            FluentError::Internal { details, .. } => details.clone(),
+            FluentError::Unauthorized => None,
         }
     }
 }
@@ -301,6 +383,7 @@ mod tests {
             FluentError::InvalidArguments {
                 reason: "missing required argument".into(),
                 arguments: vec!["quantity".into()],
+                violations: vec![],
             },
             FluentError::UnknownTransaction {
                 protocol: "acme/swap".into(),
@@ -320,14 +403,19 @@ mod tests {
             },
             FluentError::InsufficientFunds {
                 input: Some("source".into()),
+                diagnostic: None,
             },
-            FluentError::InputNotResolved { input: None },
+            FluentError::InputNotResolved {
+                input: None,
+                diagnostic: None,
+            },
             FluentError::ScriptFailure {
                 logs: vec!["deadline passed".into()],
             },
             FluentError::ResolverTimeout { timeout_secs: 30 },
             FluentError::ResolverUnavailable {
                 network: "preprod".into(),
+                status: None,
             },
             FluentError::QuotaExhausted { limit: 200 },
             FluentError::Unauthorized,
@@ -381,10 +469,84 @@ mod tests {
         let err = FluentError::InvalidArguments {
             reason: "not a valid address".into(),
             arguments: vec!["receiver".into()],
+            violations: vec![],
         };
         assert_eq!(err.code(), ErrorCode::InvalidArguments);
         assert_eq!(err.message(), "invalid arguments: not a valid address");
         assert_eq!(err.details(), Some(json!({ "arguments": ["receiver"] })));
+
+        let err = FluentError::InvalidArguments {
+            reason: "value is not of type \"integer\" at /quantity".into(),
+            arguments: vec!["quantity".into()],
+            violations: vec![Violation {
+                path: "/quantity".into(),
+                message: "value is not of type \"integer\"".into(),
+            }],
+        };
+        assert_eq!(
+            err.details(),
+            Some(json!({
+                "arguments": ["quantity"],
+                "violations": [{ "path": "/quantity", "message": "value is not of type \"integer\"" }]
+            }))
+        );
+    }
+
+    #[test]
+    fn unresolved_inputs_report_counts_only() {
+        let diagnostic = InputDiagnostic {
+            has_address: true,
+            refs: 0,
+            matched: 3,
+        };
+        let err = FluentError::InsufficientFunds {
+            input: Some("source".into()),
+            diagnostic: Some(diagnostic),
+        };
+        assert_eq!(
+            err.details(),
+            Some(json!({
+                "input": "source",
+                "query": { "has_address": true, "refs": 0 },
+                "search_space": { "matched": 3 }
+            }))
+        );
+        let err = FluentError::InputNotResolved {
+            input: None,
+            diagnostic: None,
+        };
+        assert_eq!(err.details(), None);
+    }
+
+    #[test]
+    fn resolver_unavailable_carries_the_status_only_when_known() {
+        let err = FluentError::ResolverUnavailable {
+            network: "preprod".into(),
+            status: Some(503),
+        };
+        assert_eq!(
+            err.details(),
+            Some(json!({ "network": "preprod", "status": 503 }))
+        );
+        let err = FluentError::ResolverUnavailable {
+            network: "preprod".into(),
+            status: None,
+        };
+        assert_eq!(err.details(), Some(json!({ "network": "preprod" })));
+    }
+
+    #[test]
+    fn internal_details_are_explicit() {
+        let err = FluentError::internal_with_details(
+            "hash mismatch in resolver output",
+            json!({ "resolver_tx_hash": "aa", "computed_tx_hash": "bb" }),
+        );
+        assert_eq!(err.code(), ErrorCode::Internal);
+        assert_eq!(err.message(), "internal error");
+        assert_eq!(
+            err.details(),
+            Some(json!({ "resolver_tx_hash": "aa", "computed_tx_hash": "bb" }))
+        );
     }
 
     #[test]

@@ -21,6 +21,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Inspect Cardano addresses offline.
+    Address {
+        #[command(subcommand)]
+        command: AddressCommand,
+    },
     /// Inspect server configuration.
     Config {
         #[command(subcommand)]
@@ -48,6 +53,15 @@ enum Command {
         /// input schema.
         #[arg(long, value_name = "JSON")]
         args: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AddressCommand {
+    /// Decode an address and print its kind, network and credentials as JSON.
+    Inspect {
+        /// Bech32, hex or base58 (Byron) address.
+        address: String,
     },
 }
 
@@ -92,6 +106,13 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
+        Command::Address {
+            command: AddressCommand::Inspect { address },
+        } => {
+            let report = fluent_core::address::inspect(&address)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Config {
             command: ConfigCommand::Check { config },
         } => {

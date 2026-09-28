@@ -8,15 +8,16 @@ user has reviewed the transaction.
 
 This repository is at an early stage. It holds the workspace layout, the
 contracts shared by every later component (the configuration model, the error
-type and the result envelope), the registration bundle loader, the tool catalog
-and the transaction preparation engine. Registry fetching, transports,
-authentication, quotas, storage and the site are added later.
+type and the result envelope), offline address inspection, the registration
+bundle loader, the tool catalog and the transaction preparation engine.
+Registry fetching, transports, authentication, quotas, storage and the site are
+added later.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
-| `crates/fluent-core` | Library: configuration, errors, result envelopes, registration bundles, tool catalog, preparation engine and transaction summaries; later address utilities. |
+| `crates/fluent-core` | Library: configuration, errors, result envelopes, address inspection, registration bundles, tool catalog, preparation engine and transaction summaries. |
 | `crates/fluent-server` | The `fluent` binary: CLI; later MCP transports, HTTP, store and site. |
 | `examples/config` | Example configurations, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
@@ -87,6 +88,42 @@ the `PreparedTransaction` envelope as JSON. On failure it prints
 `{"error": {"code", "message", "details"}}` instead (`details` only when there
 are some) and exits non-zero. Rejected bundles are reported on stderr and do
 not stop the others. Nothing is signed or submitted.
+
+```sh
+fluent address inspect addr_test1vz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzerspjrlsz
+```
+
+`address inspect` decodes one Cardano address (bech32 or hex; base58 for
+Byron) without contacting the chain and prints its kind, network and
+credentials as JSON:
+
+```json
+{
+  "input": "addr_test1vz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzerspjrlsz",
+  "kind": "shelley_enterprise",
+  "network": "preprod_or_preview",
+  "network_id": 0,
+  "payment_credential": {
+    "type": "key_hash",
+    "hash_hex": "9493315cd92eb5d8c4304e67b7e16ae36d61d34502694657811a2c8e"
+  },
+  "stake_credential": null,
+  "bech32": "addr_test1vz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzerspjrlsz",
+  "hex": "609493315cd92eb5d8c4304e67b7e16ae36d61d34502694657811a2c8e",
+  "notes": [
+    "Testnet addresses do not distinguish preprod from preview; confirm the network with the user."
+  ]
+}
+```
+
+`kind` is `shelley_base`, `shelley_enterprise`, `shelley_pointer`, `stake` or
+`byron`; `network` is `mainnet`, `preprod_or_preview` or `unknown`. Credential
+`type` is `key_hash` or `script_hash`, and a stake credential may instead be a
+`pointer` with `hash_hex: null` and its `slot`, `tx_idx` and `cert_idx`.
+Missing credentials are `null`. Byron addresses carry no credentials; their
+`network` comes from the address's network tag when present. `notes` states
+what the address cannot tell, such as which testnet it belongs to. Malformed
+input exits non-zero with an `invalid arguments` error.
 
 ## Configuration reference
 
@@ -389,6 +426,10 @@ Nothing the engine logs contains an argument value or an API key.
 
 ## Shared contracts
 
+- `fluent_core::address::inspect`: decodes one address into an
+  `AddressReport` (the JSON above, deriving `schemars::JsonSchema`). Malformed
+  input is `invalid_arguments` naming the `address` argument; neither the
+  message nor the details quote the input.
 - `fluent_core::config::Config`: the model above; `Config::load`,
   `Config::redacted`.
 - `fluent_core::error::FluentError`: `code()` returns a stable `ErrorCode`

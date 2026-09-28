@@ -46,6 +46,8 @@ pallas-addresses = "1.4"
 pallas-codec = "1.4"
 pallas-crypto = "1.4"
 pallas-primitives = "1.4"
+# Verifies Byron address checksums, which pallas-addresses does not.
+crc = "3"
 # Validates caller arguments against generated tool schemas. No default
 # features, so no HTTP or file resolution of remote references.
 jsonschema = { version = "0.58", default-features = false }

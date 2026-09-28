@@ -380,6 +380,11 @@ impl Config {
             if audience.is_empty() {
                 problems.push("auth.audience must not be empty".to_string());
             }
+            // The protected resource metadata is advertised under it.
+            if self.server.public_url.is_none() {
+                problems
+                    .push("server.public_url is required when auth.mode = \"oidc\"".to_string());
+            }
         }
 
         if let Some(store) = &self.store
@@ -719,6 +724,23 @@ mod tests {
         );
         let err = Config::from_toml_str(&text, NO_ENV).unwrap_err();
         assert!(err.to_string().contains("jwks_url"), "{err}");
+    }
+
+    #[test]
+    fn oidc_mode_requires_a_public_url() {
+        let text = MINIMAL.replace(
+            "mode = \"token\"\n        token_env = \"FLUENT_API_TOKEN\"",
+            "mode = \"oidc\"\nissuer = \"https://id.example/\"\n\
+             jwks_url = \"https://id.example/jwks.json\"\naudience = \"https://fluent.example/mcp\"",
+        );
+        let found = problems(Config::from_toml_str(&text, NO_ENV));
+        assert_eq!(
+            found,
+            ["server.public_url is required when auth.mode = \"oidc\""]
+        );
+
+        let text = format!("{text}\n[server]\npublic_url = \"https://fluent.example\"");
+        Config::from_toml_str(&text, NO_ENV).unwrap();
     }
 
     #[test]

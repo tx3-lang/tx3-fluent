@@ -5,9 +5,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use fluent_core::registration::{self, Loaded};
 use fluent_core::{Config, Engine, FluentError, PrepareRequest};
+use fluent_server::http::{HttpServer, shutdown_signal};
 use fluent_server::mcp::{AllRegistrations, FluentHandler, error_json};
 use rmcp::ServiceExt;
 use serde::Serialize;
@@ -59,10 +60,15 @@ enum Command {
     },
     /// Serve every loaded registration's tools over MCP. Logs go to stderr
     /// as JSON lines.
+    #[command(group(ArgGroup::new("transport").required(true).args(["stdio", "http"])))]
     Serve {
-        /// Speak MCP over stdin and stdout, the only transport so far.
-        #[arg(long, required = true)]
+        /// Speak MCP over stdin and stdout.
+        #[arg(long)]
         stdio: bool,
+        /// Speak MCP over Streamable HTTP at `/mcp` on `[server].listen`,
+        /// authenticating callers as `[auth]` says, until SIGTERM or Ctrl-C.
+        #[arg(long)]
+        http: bool,
         /// Configuration file to load; `FLUENT_*` environment overrides apply.
         #[arg(long, value_name = "FILE")]
         config: PathBuf,
@@ -165,13 +171,14 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             tx,
             args,
         } => prepare(&config, registration, tx, &args),
-        Command::Serve { stdio: _, config } => serve(&config),
+        Command::Serve { http, config, .. } => serve(&config, http),
     }
 }
 
-/// `fluent serve --stdio`: loads the configuration and registrations, then
-/// serves MCP on stdin and stdout until the client closes stdin.
-fn serve(config: &Path) -> anyhow::Result<ExitCode> {
+/// `fluent serve`: loads the configuration and registrations, then serves
+/// MCP on stdin and stdout until the client closes stdin, or over HTTP when
+/// `http` until SIGTERM or Ctrl-C.
+fn serve(config: &Path, http: bool) -> anyhow::Result<ExitCode> {
     let loaded = Config::load(config).with_context(|| format!("loading {}", config.display()))?;
     let registrations = registration::load_dir(&loaded.registrations.dir)?;
     for rejected in &registrations.rejected {
@@ -194,6 +201,18 @@ fn serve(config: &Path) -> anyhow::Result<ExitCode> {
         .build()
         .context("starting the async runtime")?;
     runtime.block_on(async {
+        if http {
+            let server = HttpServer::bind(&loaded, handler).await?;
+            tracing::info!(
+                registrations = catalog.len(),
+                tools,
+                address = %server.local_addr()?,
+                "serving MCP over HTTP"
+            );
+            server.run(shutdown_signal()).await?;
+            tracing::info!("HTTP server stopped");
+            return anyhow::Ok(());
+        }
         tracing::info!(
             registrations = catalog.len(),
             tools,

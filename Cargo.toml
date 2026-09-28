@@ -25,6 +25,15 @@ rmcp = { version = "=3.4.1", features = [
     "transport-streamable-http-server-session",
 ] }
 axum = "0.8"
+http = "1"
+# Cancels the streamable HTTP service's sessions on shutdown.
+tokio-util = "0.7"
+# Fetches the OIDC issuer's JWKS.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Validates OIDC access tokens: RS256 and ES256 through the RustCrypto backend.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
+# Constant-time comparison of static bearer tokens.
+subtle = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs"] }
 
 serde = { version = "1", features = ["derive"] }
@@ -51,8 +60,11 @@ crc = "3"
 # Validates caller arguments against generated tool schemas. No default
 # features, so no HTTP or file resolution of remote references.
 jsonschema = { version = "0.58", default-features = false }
-# Tests only: a scripted TRP endpoint.
+# Tests only: a scripted TRP endpoint and JWKS.
 wiremock = "0.6"
+# Tests only: RSA key pairs for minting tokens.
+rsa = "0.9"
+rand = "0.8"
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -62,3 +74,7 @@ unsafe_code = "forbid"
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+
+# RSA key generation in tests is unbearably slow unoptimized.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3

@@ -14,8 +14,13 @@
 //! text content. A [`FluentError`] is a tool result with `isError: true` and
 //! the text `{"error": {code, message, details}}`, never a JSON-RPC error; only
 //! a tool name the session cannot see is a protocol error.
+//!
+//! Over HTTP, every session gets its own handler from
+//! [`FluentHandler::for_session`]. It records the [`Principal`] that
+//! initialized the session and refuses requests authenticated as anyone
+//! else.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use fluent_core::catalog::{
     self, GET_SKILL_TOOL, INSPECT_ADDRESS_TOOL, SkillProtocol, SkillResult, ToolDescriptor,
@@ -23,13 +28,15 @@ use fluent_core::catalog::{
 use fluent_core::{Catalog, Engine, FluentError, PrepareRequest, Registration, address};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
-    ToolAnnotations,
+    InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Map, Value, json};
 use tracing::info;
+
+use crate::http::auth::Principal;
 
 /// The server name reported to clients.
 pub const SERVER_NAME: &str = "tx3-fluent";
@@ -78,7 +85,9 @@ pub struct FluentHandler {
     catalog: Arc<Catalog>,
     engine: Arc<Engine>,
     scope: Arc<dyn ToolScope>,
-    tools: Vec<ToolDescriptor>,
+    tools: Arc<[ToolDescriptor]>,
+    /// Who initialized this session; `None` inside when nobody authenticated.
+    principal: OnceLock<Option<Principal>>,
 }
 
 impl FluentHandler {
@@ -91,13 +100,47 @@ impl FluentHandler {
         engine: Arc<Engine>,
         scope: Arc<dyn ToolScope>,
     ) -> Result<FluentHandler, FluentError> {
-        let tools = catalog::all_tools(&catalog)?;
+        let tools = catalog::all_tools(&catalog)?.into();
         Ok(FluentHandler {
             catalog,
             engine,
             scope,
             tools,
+            principal: OnceLock::new(),
         })
+    }
+
+    /// A handler for a new session: the same catalog, engine, scope and
+    /// tools, and no principal yet.
+    pub fn for_session(&self) -> FluentHandler {
+        FluentHandler {
+            catalog: Arc::clone(&self.catalog),
+            engine: Arc::clone(&self.engine),
+            scope: Arc::clone(&self.scope),
+            tools: Arc::clone(&self.tools),
+            principal: OnceLock::new(),
+        }
+    }
+
+    /// Who initialized this session: `None` before `initialize`, over stdio
+    /// and when the server authenticates nobody.
+    pub fn principal(&self) -> Option<&Principal> {
+        self.principal.get().and_then(Option::as_ref)
+    }
+
+    /// Refuses a request authenticated as someone other than the session's
+    /// principal.
+    fn check_principal(&self, context: &RequestContext<RoleServer>) -> Result<(), ErrorData> {
+        match self.principal.get() {
+            Some(session) if *session != request_principal(context) => {
+                info!("request refused: the session belongs to another principal");
+                Err(ErrorData::invalid_request(
+                    "this session belongs to another principal",
+                    None,
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The tools this session can see: the fixed tools, then the transaction
@@ -195,11 +238,25 @@ impl ServerHandler for FluentHandler {
         .with_instructions(INSTRUCTIONS)
     }
 
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        let principal = request_principal(&context);
+        if self.principal.set(principal).is_err() {
+            self.check_principal(&context)?;
+        }
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
+    }
+
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        self.check_principal(&context)?;
         Ok(ListToolsResult::with_all_items(
             self.visible_tools().into_iter().map(to_tool).collect(),
         ))
@@ -215,8 +272,9 @@ impl ServerHandler for FluentHandler {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        self.check_principal(&context)?;
         let name = request.name.as_ref();
         let args = request.arguments.unwrap_or_default();
         let Some(result) = self.call(name, args).await else {
@@ -238,6 +296,16 @@ impl ServerHandler for FluentHandler {
         };
         Ok(result.into())
     }
+}
+
+/// The principal authentication attached to the HTTP request behind
+/// `context`; `None` over stdio or without authentication.
+pub fn request_principal(context: &RequestContext<RoleServer>) -> Option<Principal> {
+    context
+        .extensions
+        .get::<http::request::Parts>()
+        .and_then(|parts| parts.extensions.get::<Principal>())
+        .cloned()
 }
 
 /// A [`FluentError`] as `{"error": {code, message, details}}`; `details` is

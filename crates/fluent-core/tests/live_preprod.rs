@@ -22,6 +22,7 @@
 use std::env;
 use std::path::PathBuf;
 
+use fluent_core::envelope::OutputSummary;
 use fluent_core::registration::load_dir;
 use fluent_core::{Config, Engine, PrepareRequest};
 use serde_json::json;
@@ -98,15 +99,19 @@ async fn prepares_a_transfer_on_preprod() {
     assert_eq!(prepared.network, "preprod");
     assert_eq!(prepared.tx_hash.len(), 64);
     assert!(!prepared.summary.inputs.is_empty());
-    let to_receiver: Vec<_> = prepared
-        .summary
-        .outputs
-        .iter()
-        .filter(|output| output.address == receiver)
-        .collect();
-    assert_eq!(to_receiver.len(), 1, "{:?}", prepared.summary.outputs);
-    assert_eq!(to_receiver[0].lovelace, QUANTITY);
-    assert!(to_receiver[0].assets.is_empty());
+    // `transfer` declares the receiver's output first, and outputs keep their
+    // declared order. The position identifies it even when the receiver is
+    // also the sender, whose middleman and change outputs share its address.
+    let outputs = &prepared.summary.outputs;
+    assert_eq!(outputs.len(), 3, "{outputs:?}");
+    assert_eq!(
+        outputs[0],
+        OutputSummary {
+            address: receiver,
+            lovelace: QUANTITY,
+            assets: Vec::new(),
+        }
+    );
     eprintln!(
         "prepared {} ({} inputs, {} outputs, fee {} lovelace)",
         prepared.tx_hash,

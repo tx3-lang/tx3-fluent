@@ -1,6 +1,6 @@
 //! End-to-end checks of the `fluent` binary.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn example(name: &str) -> PathBuf {
@@ -154,5 +154,147 @@ fn address_inspect_rejects_malformed_input() {
         stderr(&output).contains("invalid arguments: address is not valid bech32"),
         "{}",
         stderr(&output)
+    );
+}
+
+fn registrations(dir: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../fluent-core/tests/fixtures/registrations")
+        .join(dir)
+}
+
+/// Writes a minimal configuration reading registrations from `dir`.
+fn config_for(name: &str, dir: &Path) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.toml"));
+    let text = format!(
+        "[registrations]\ndir = {}\n\n[networks.preprod]\ntrp_url = \"https://trp.example\"\n\n\
+         [auth]\nmode = \"none\"\n",
+        toml::Value::String(dir.display().to_string())
+    );
+    std::fs::write(&path, text).expect("write configuration");
+    path
+}
+
+fn check_registrations(config: &Path) -> (Output, toml::Table) {
+    let config = config.to_str().expect("a UTF-8 path");
+    let output = fluent(&["registrations", "check", "--config", config], &[]);
+    let report =
+        toml::from_str(&stdout(&output)).unwrap_or_else(|err| panic!("{err}: {}", stdout(&output)));
+    (output, report)
+}
+
+fn rows<'a>(report: &'a toml::Table, key: &str) -> Vec<&'a toml::Table> {
+    report[key]
+        .as_array()
+        .expect("an array of tables")
+        .iter()
+        .map(|row| row.as_table().expect("a table"))
+        .collect()
+}
+
+#[test]
+fn registrations_check_prints_each_registration() {
+    let dir = registrations("valid");
+    let (output, report) = check_registrations(&config_for("registrations-valid", &dir));
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!report.contains_key("rejected"), "{report}");
+
+    // Digests and revisions computed with sha256sum; see
+    // crates/fluent-core/tests/registrations.rs.
+    let expected = [
+        [
+            ("slug", "strike_staking_mainnet"),
+            ("protocol", "strike-finance/strike-staking:0.1.0"),
+            ("network", "mainnet"),
+            ("profile", "mainnet"),
+            ("revision", "ec7797deaa59"),
+            (
+                "tii_digest",
+                "sha256:8da7d6658f6083325a644b7e1c6af6dc57494a7baf1addd7ed624499a2064bd3",
+            ),
+            (
+                "skill_digest",
+                "sha256:17744829d0f6f415d6c3f5a433d6568987016508edc6a0f170145a3779f128ae",
+            ),
+        ],
+        [
+            ("slug", "transfer_preprod"),
+            ("protocol", "unknown/unknown:0.0.1"),
+            ("network", "preprod"),
+            ("profile", "preprod"),
+            ("revision", "04948dcd8aa4"),
+            (
+                "tii_digest",
+                "sha256:8d5d715f300e618373b588af96f0cfb9b0a3904b3a34fc0038f72ebb1695da31",
+            ),
+            (
+                "skill_digest",
+                "sha256:95afa7141036ade51321df3e8f203727240f0bebd14fd583c0a7be7d56fbe0cd",
+            ),
+        ],
+    ];
+    let printed = rows(&report, "registration");
+    assert_eq!(printed.len(), expected.len(), "{report}");
+    for (row, fields) in printed.into_iter().zip(expected) {
+        for (key, value) in fields {
+            assert_eq!(row[key].as_str(), Some(value), "{key} in {row}");
+        }
+        let slug = row["slug"].as_str().unwrap();
+        assert_eq!(
+            row["bundle"].as_str(),
+            Some(dir.join(slug).display().to_string().as_str())
+        );
+    }
+}
+
+#[test]
+fn registrations_check_prints_rejections_and_fails() {
+    let dir = registrations("invalid");
+    let (output, report) = check_registrations(&config_for("registrations-invalid", &dir));
+    assert!(!output.status.success());
+    assert!(!report.contains_key("registration"), "{report}");
+    assert!(
+        stderr(&output).contains("5 of 5 registration bundles rejected"),
+        "{}",
+        stderr(&output)
+    );
+
+    let expected = [
+        ("local_profile", "registration_unavailable"),
+        ("malformed_tii", "registration_unavailable"),
+        ("missing_profile", "registration_unavailable"),
+        ("wrong_network", "network_mismatch"),
+        ("wrong_skill_binding", "registration_unavailable"),
+    ];
+    let printed = rows(&report, "rejected");
+    assert_eq!(printed.len(), expected.len(), "{report}");
+    for (row, (name, code)) in printed.into_iter().zip(expected) {
+        let bundle = dir.join(name).display().to_string();
+        assert_eq!(row["bundle"].as_str(), Some(bundle.as_str()));
+        assert_eq!(row["code"].as_str(), Some(code), "{row}");
+        assert!(row["message"].as_str().unwrap().contains(&bundle), "{row}");
+    }
+}
+
+#[test]
+fn registrations_check_reports_an_unreadable_directory() {
+    let dir = registrations("does-not-exist");
+    let config = config_for("registrations-missing", &dir);
+    let output = fluent(
+        &[
+            "registrations",
+            "check",
+            "--config",
+            config.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert!(!output.status.success());
+    assert!(stdout(&output).is_empty(), "{}", stdout(&output));
+    let err = stderr(&output);
+    assert!(err.contains(&dir.display().to_string()), "{err}");
+    assert!(
+        err.contains("cannot read the registrations directory"),
+        "{err}"
     );
 }

@@ -6,13 +6,19 @@
 //! - [`error`] — [`FluentError`], the error every operation reports.
 //! - [`envelope`] — [`PreparedTransaction`], the result of preparing a
 //!   transaction.
+//! - [`registration`] — registration bundles, loaded into a [`Catalog`].
+//! - [`catalog`] — the MCP tools a [`Catalog`] offers, as [`ToolDescriptor`]s.
 
 pub mod address;
+pub mod catalog;
 pub mod config;
 pub mod envelope;
 pub mod error;
+pub mod registration;
 
 pub use address::AddressReport;
+pub use catalog::ToolDescriptor;
 pub use config::Config;
 pub use envelope::PreparedTransaction;
 pub use error::{ErrorCode, FluentError};
+pub use registration::{Catalog, Registration};

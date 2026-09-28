@@ -1,0 +1,19 @@
+# The SDK transfer vector (tx3-lang/rust-sdk sdk/tests/fixtures/transfer.tii),
+# copied verbatim; the slug labels it. Its TII declares unknown/unknown:0.0.1.
+slug = "transfer_preprod"
+
+[protocol]
+scope = "unknown"
+name = "unknown"
+version = "0.0.1"
+source = "local"
+
+[artifact]
+tii_digest = "sha256:8d5d715f300e618373b588af96f0cfb9b0a3904b3a34fc0038f72ebb1695da31"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "preprod"
+network = "preprod"

@@ -1,0 +1,299 @@
+[
+  {
+    "name": "transfer_preprod_transfer",
+    "title": "unknown 0.0.1 · transfer (preprod)",
+    "description": "Prepares an UNSIGNED preprod transaction for unknown/unknown:0.0.1. Nothing is signed or submitted. Call fluent_get_skill for this protocol before using this tool.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "middleman": {
+          "description": "bech32 address of the middleman party",
+          "type": "string"
+        },
+        "quantity": {
+          "type": "integer"
+        },
+        "receiver": {
+          "description": "bech32 address of the receiver party",
+          "type": "string"
+        },
+        "sender": {
+          "description": "bech32 address of the sender party",
+          "type": "string"
+        }
+      },
+      "required": [
+        "quantity",
+        "middleman",
+        "receiver",
+        "sender"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "An unsigned, unsubmitted transaction ready for a wallet to review and sign.",
+      "properties": {
+        "network": {
+          "description": "The network the transaction was resolved against.",
+          "type": "string"
+        },
+        "next_steps": {
+          "const": "This transaction is unsigned and has not been submitted. Import the CBOR into a wallet that can sign unsigned transactions, review the summary there, then sign and submit.",
+          "description": "Fixed instructions to sign and submit with a wallet (`NEXT_STEPS`).",
+          "type": "string"
+        },
+        "protocol": {
+          "additionalProperties": false,
+          "description": "The protocol registration the transaction was prepared from.",
+          "properties": {
+            "name": {
+              "description": "The protocol name within its scope.",
+              "type": "string"
+            },
+            "registration_revision": {
+              "description": "The registration revision that served the request.",
+              "type": "string"
+            },
+            "registration_slug": {
+              "description": "The slug of the registration that served the request.",
+              "type": "string"
+            },
+            "scope": {
+              "description": "The registry scope that publishes the protocol.",
+              "type": "string"
+            },
+            "tii_digest": {
+              "description": "The digest of the TII artifact used, for example `sha256:<hex>`.",
+              "type": "string"
+            },
+            "version": {
+              "description": "The protocol version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope",
+            "name",
+            "version",
+            "registration_slug",
+            "registration_revision",
+            "tii_digest"
+          ],
+          "type": "object"
+        },
+        "signed": {
+          "const": false,
+          "description": "Always `false`: Fluent never signs.",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "Always `\"prepared_unsigned\"`.",
+          "oneOf": [
+            {
+              "const": "prepared_unsigned",
+              "description": "Prepared, not signed, not submitted.",
+              "type": "string"
+            }
+          ]
+        },
+        "submitted": {
+          "const": false,
+          "description": "Always `false`: Fluent never submits.",
+          "type": "boolean"
+        },
+        "summary": {
+          "additionalProperties": false,
+          "description": "A decoded summary for review before signing.",
+          "properties": {
+            "fee_lovelace": {
+              "description": "The transaction fee in lovelace.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "inputs": {
+              "description": "The UTxOs the transaction spends.",
+              "items": {
+                "additionalProperties": false,
+                "description": "A spent UTxO.",
+                "properties": {
+                  "ref": {
+                    "description": "The UTxO reference as `<tx_hash>#<index>`.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ref"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "mint": {
+              "description": "Assets minted (positive) or burned (negative).",
+              "items": {
+                "additionalProperties": false,
+                "description": "A quantity of one native asset minted or burned.",
+                "properties": {
+                  "amount": {
+                    "description": "The quantity minted (positive) or burned (negative).",
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "asset_name_hex": {
+                    "description": "The asset name, hex encoded.",
+                    "type": "string"
+                  },
+                  "policy_id": {
+                    "description": "The minting policy hash, hex encoded.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "policy_id",
+                  "asset_name_hex",
+                  "amount"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "outputs": {
+              "description": "The outputs the transaction creates.",
+              "items": {
+                "additionalProperties": false,
+                "description": "A created output.",
+                "properties": {
+                  "address": {
+                    "description": "The receiving address, bech32 encoded.",
+                    "type": "string"
+                  },
+                  "assets": {
+                    "description": "The native assets the output holds.",
+                    "items": {
+                      "additionalProperties": false,
+                      "description": "A quantity of one native asset held by an output.",
+                      "properties": {
+                        "amount": {
+                          "description": "The quantity held.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "asset_name_hex": {
+                          "description": "The asset name, hex encoded.",
+                          "type": "string"
+                        },
+                        "policy_id": {
+                          "description": "The minting policy hash, hex encoded.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "policy_id",
+                        "asset_name_hex",
+                        "amount"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "lovelace": {
+                    "description": "The lovelace the output holds.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "address",
+                  "lovelace",
+                  "assets"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "required_signers": {
+              "description": "Key hashes that must sign, hex encoded.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "validity": {
+              "additionalProperties": false,
+              "description": "The slot range in which the transaction is valid.",
+              "properties": {
+                "from_slot": {
+                  "description": "The first slot in which the transaction is valid.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "until_slot": {
+                  "description": "The slot from which the transaction is no longer valid.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "inputs",
+            "outputs",
+            "fee_lovelace",
+            "mint",
+            "validity",
+            "required_signers"
+          ],
+          "type": "object"
+        },
+        "transaction": {
+          "description": "The name of the protocol transaction that was prepared.",
+          "type": "string"
+        },
+        "tx_hash": {
+          "description": "The transaction hash, hex encoded.",
+          "type": "string"
+        },
+        "unsigned_tx_cbor_hex": {
+          "description": "The complete unsigned transaction in CBOR, hex encoded: what a wallet\nimports and signs, not only the transaction body.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "signed",
+        "submitted",
+        "protocol",
+        "transaction",
+        "network",
+        "tx_hash",
+        "unsigned_tx_cbor_hex",
+        "summary",
+        "next_steps"
+      ],
+      "title": "PreparedTransaction",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "registration_slug": "transfer_preprod",
+    "tx_name": "transfer"
+  }
+]

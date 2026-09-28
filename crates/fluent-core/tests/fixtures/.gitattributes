@@ -1,0 +1,2 @@
+# Digests in the tests are over the exact bytes: never convert line endings.
+* -text

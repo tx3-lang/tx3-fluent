@@ -1,0 +1,15 @@
+# Rule: the network must equal the profile's network. preprod serves preprod.
+slug = "wrong_network"
+
+[protocol]
+scope = "unknown"
+name = "unknown"
+version = "0.0.1"
+source = "local"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "preprod"
+network = "mainnet"

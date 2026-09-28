@@ -1,0 +1,15 @@
+# Rule: the skill must bind this TII. Its tii_digest is the Strike TII's.
+slug = "wrong_skill_binding"
+
+[protocol]
+scope = "unknown"
+name = "unknown"
+version = "0.0.1"
+source = "local"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "preprod"
+network = "preprod"

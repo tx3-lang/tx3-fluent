@@ -39,8 +39,10 @@ fn transfer_hex() -> String {
 
 /// The valid fixture registrations: `transfer_preprod` and
 /// `strike_staking_mainnet`.
-fn catalog() -> Catalog {
-    let loaded = load_dir(fixture("registrations/valid")).expect("the fixtures load");
+async fn catalog() -> Catalog {
+    let loaded = load_dir(fixture("registrations/valid"))
+        .await
+        .expect("the fixtures load");
     assert!(loaded.rejected.is_empty(), "{:?}", loaded.rejected);
     loaded.catalog
 }
@@ -72,8 +74,8 @@ fn config(trp_url: &str, api_key: Option<&str>) -> Config {
     Config::from_toml_str(&text, env).expect("a valid test configuration")
 }
 
-fn engine(server: &MockServer) -> Engine {
-    Engine::new(&config(&server.uri(), Some(API_KEY)), &catalog())
+async fn engine(server: &MockServer) -> Engine {
+    Engine::new(&config(&server.uri(), Some(API_KEY)), &catalog().await)
 }
 
 fn transfer(args: Value) -> PrepareRequest {
@@ -113,7 +115,10 @@ async fn resolver_failing(code: i32, message: &str, data: Value) -> MockServer {
 }
 
 async fn prepare_against(server: &MockServer) -> Result<PreparedTransaction, FluentError> {
-    engine(server).prepare(transfer(transfer_args())).await
+    engine(server)
+        .await
+        .prepare(transfer(transfer_args()))
+        .await
 }
 
 async fn fails_with(server: &MockServer, code: ErrorCode) -> FluentError {
@@ -152,7 +157,7 @@ async fn prepares_a_transfer_from_the_resolver_envelope() {
     .await;
 
     let prepared = prepare_against(&server).await.unwrap();
-    let registration = catalog().get("transfer_preprod").unwrap().clone();
+    let registration = catalog().await.get("transfer_preprod").unwrap().clone();
     assert_eq!(prepared.protocol.scope, "unknown");
     assert_eq!(prepared.protocol.name, "unknown");
     assert_eq!(prepared.protocol.version, "0.0.1");
@@ -219,7 +224,7 @@ async fn omits_the_api_key_header_when_its_variable_is_unset() {
         "result": { "hash": TRANSFER_HASH, "tx": transfer_hex() }
     }))
     .await;
-    let engine = Engine::new(&config(&server.uri(), None), &catalog());
+    let engine = Engine::new(&config(&server.uri(), None), &catalog().await);
     engine.prepare(transfer(transfer_args())).await.unwrap();
     let sent = requests(&server).await;
     assert!(sent[0].headers.get(API_KEY_HEADER).is_none());
@@ -310,7 +315,7 @@ async fn unreachable_resolvers_are_resolver_unavailable() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let engine = Engine::new(&config(&url, None), &catalog());
+    let engine = Engine::new(&config(&url, None), &catalog().await);
     let err = engine.prepare(transfer(transfer_args())).await.unwrap_err();
     assert_eq!(err.code(), ErrorCode::ResolverUnavailable);
     assert_eq!(err.details(), Some(json!({ "network": "preprod" })));
@@ -346,6 +351,7 @@ async fn slow_resolvers_time_out() {
 async fn unknown_transactions_are_rejected_before_resolving() {
     let server = MockServer::start().await;
     let err = engine(&server)
+        .await
         .prepare(PrepareRequest {
             registration: "transfer_preprod".into(),
             tx: "swap".into(),
@@ -392,7 +398,7 @@ async fn undecodable_cbor_is_internal() {
 #[tokio::test]
 async fn invalid_arguments_never_reach_the_resolver() {
     let server = MockServer::start().await;
-    let engine = engine(&server);
+    let engine = engine(&server).await;
     let cases = [
         ("tax", json!(1)),
         ("TAX", json!(1)),
@@ -424,6 +430,7 @@ async fn invalid_arguments_never_reach_the_resolver() {
 async fn unknown_registrations_are_unknown_protocols() {
     let server = MockServer::start().await;
     let err = engine(&server)
+        .await
         .prepare(PrepareRequest {
             registration: "nothing_here".into(),
             tx: "transfer".into(),
@@ -438,6 +445,7 @@ async fn unknown_registrations_are_unknown_protocols() {
 async fn registrations_on_unserved_networks_are_network_mismatches() {
     let server = MockServer::start().await;
     let err = engine(&server)
+        .await
         .prepare(PrepareRequest {
             registration: "strike_staking_mainnet".into(),
             tx: "stake".into(),

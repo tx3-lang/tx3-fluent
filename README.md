@@ -9,9 +9,9 @@ user has reviewed the transaction.
 This repository is at an early stage. It holds the workspace layout, the
 contracts shared by every later component (the configuration model, the error
 type and the result envelope), offline address inspection, the registration
-bundle loader, the tool catalog and the transaction preparation engine, and the
-MCP server over stdio. Registry fetching, the HTTP transport, authentication,
-quotas, storage and the site are added later.
+bundle loader with its registry artifact fetch, the tool catalog and the
+transaction preparation engine, and the MCP server over stdio. The HTTP
+transport, authentication, quotas, storage and the site are added later.
 
 ## Layout
 
@@ -71,10 +71,14 @@ fluent registrations check --config examples/config/self-hosted.toml
 ```
 
 `registrations check` loads the configuration, then every bundle in
-`[registrations].dir`, and prints one TOML `[[registration]]` table per
-registration (slug, protocol, network, profile, revision, digests, bundle) and
-one `[[rejected]]` table per rejected bundle (bundle, error code, message). It
-exits non-zero when any bundle is rejected or the directory cannot be read.
+`[registrations].dir`, fetching [registry artifacts](#registry-artifacts), and
+prints one TOML `[[registration]]` table per registration (slug, protocol,
+network, profile, revision, digests, bundle) and one `[[rejected]]` table per
+rejected bundle (bundle, error code, message). A registry-sourced registration
+adds a `[registration.provenance]` table: `registry_url`, `ref`,
+`manifest_digest`, and, when the manifest has them, `source_digest` and
+`source_revision`. It exits non-zero when any bundle is rejected or the
+directory cannot be read.
 
 ```sh
 fluent prepare --config fluent.toml \
@@ -289,6 +293,7 @@ registrations/
     registration.toml   manifest
     SKILL.md            consumption skill
     protocol.tii        TII; source = "local" only
+  .cache/               registry artifacts, by manifest digest
 ```
 
 ### `registration.toml`
@@ -318,8 +323,40 @@ network = "mainnet"                       # must be the profile's network
 ```
 
 A registry-sourced bundle carries no TII: its TII comes only from the
-digest-verified registry fetch. Registry fetching is not implemented yet, so
-this build rejects registry-sourced bundles.
+digest-verified [registry fetch](#registry-artifacts).
+
+### Registry artifacts
+
+At startup, each `source = "registry"` bundle's TII is fetched anonymously
+from `protocol.registry.url` by `ref`, for example
+`oci.tx3.land/open-tx3/strike-staking:0.2.0`. The URL names only a scheme, a
+host and an optional port. The fetch:
+
+1. requires the SHA-256 of the returned manifest bytes to equal
+   `manifest_digest`; otherwise the registration is rejected with "registry
+   content changed", because the reference now names other content;
+2. takes the manifest's one `application/tii+json` layer, whose digest must be
+   SHA-256 and whose declared size must be at most 8 MiB;
+3. pulls that layer's blob, which must not exceed the declared size, and
+   requires its SHA-256 to equal the layer digest;
+4. records the `application/tx3` layer digest (`source_digest`) and the
+   `org.opencontainers.image.revision` manifest annotation
+   (`source_revision`), when present, as the registration's provenance.
+
+The TII's digest must then equal `artifact.tii_digest`, and every rule below
+applies as it does to a local TII. Provenance records where the bytes came
+from; it is not a verified publisher identity.
+
+The verified manifest and TII are cached in `[registrations].dir/.cache/` as
+`{manifest_digest}.manifest.json` and `{manifest_digest}.tii`. When both are
+present, the manifest hashes to `manifest_digest` and the TII hashes to its
+layer digest, the cached copy is used and no request is made. Cached files
+that do not verify are ignored and replaced by a fresh fetch. Failing to write
+the cache is logged and does not reject the registration.
+
+Each artifact fetch may take 20 seconds. A fetch that fails or times out
+rejects that registration only; the others still load, and every rejection is
+logged at `warn` level.
 
 ### `SKILL.md`
 
@@ -348,6 +385,8 @@ A bundle is rejected, without stopping the others, when:
 
 - `registration.toml`, the TII or the skill cannot be read or parsed; the TII
   must parse as TII (`tx3_sdk::tii::Protocol` and `tii::spec::TiiFile`);
+- a registry artifact cannot be fetched or verified, as described in
+  [Registry artifacts](#registry-artifacts);
 - the manifest breaks a rule above, or its `tii_digest` differs from the TII's;
 - `[protocol]` differs from the TII `protocol` block;
 - the profile is not defined in the TII, or is not `mainnet`, `preprod` or
@@ -499,10 +538,15 @@ Nothing the engine logs contains an argument value or an API key.
 - `fluent_core::envelope::PreparedTransaction`: the unsigned-transaction
   result. `status`, `signed`, `submitted` and `next_steps` are fixed values, and
   it derives `schemars::JsonSchema` for use as an MCP output schema.
-- `fluent_core::registration`: `load_dir` returns a `Catalog` (slug →
-  `Arc<Registration>`, with `get` and `iter`) and the rejected bundles.
-  `Registration` exposes its `Manifest`, `SkillDocument`, TII, digests and
-  revision, and cannot be changed once loaded.
+- `fluent_core::registration`: the async `load_dir` returns a `Catalog` (slug
+  → `Arc<Registration>`, with `get` and `iter`) and the rejected bundles;
+  `load_dir_with` takes an `OciFetcher`, for example one with another timeout.
+  `Registration` exposes its `Manifest`, `SkillDocument`, TII, digests,
+  revision and, for registry bundles, `provenance()`, and cannot be changed
+  once loaded.
+- `fluent_core::registry`: `OciFetcher::fetch_tii(&RegistrySource)` returns a
+  `FetchedArtifact` (the verified TII bytes, its `Provenance` and whether it
+  came from the cache) or a `FetchError` naming the failed check.
 - `fluent_core::catalog`: `build_tools(&Registration)` and `fixed_tools()`
   return `ToolDescriptor`s (`name`, `title`, `description`, `input_schema`,
   `output_schema`, `annotations`, `registration_slug`, `tx_name`);

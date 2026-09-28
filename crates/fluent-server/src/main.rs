@@ -91,8 +91,9 @@ enum ConfigCommand {
 
 #[derive(Debug, Subcommand)]
 enum RegistrationsCommand {
-    /// Load every bundle in `[registrations].dir` and print each registration,
-    /// or why its bundle was rejected. Fails when any bundle is rejected.
+    /// Load every bundle in `[registrations].dir`, fetching registry-sourced
+    /// TII, and print each registration, or why its bundle was rejected. Fails
+    /// when any bundle is rejected.
     Check {
         /// Configuration file to load; `FLUENT_*` environment overrides apply.
         #[arg(long, value_name = "FILE")]
@@ -100,7 +101,8 @@ enum RegistrationsCommand {
     },
 }
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let logs = tracing_subscriber::fmt().with_writer(std::io::stderr);
@@ -112,7 +114,7 @@ fn main() -> ExitCode {
         logs.with_env_filter(EnvFilter::from_default_env()).init();
     }
 
-    match run(cli) {
+    match run(cli).await {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -121,7 +123,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Command::Address {
             command: AddressCommand::Inspect { address },
@@ -144,7 +146,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let loaded =
                 Config::load(&config).with_context(|| format!("loading {}", config.display()))?;
             let dir = &loaded.registrations.dir;
-            let registrations = registration::load_dir(dir)?;
+            let registrations = registration::load_dir(dir).await?;
             print!("{}", RegistrationsReport::new(&registrations).to_toml()?);
 
             let total = registrations.catalog.len() + registrations.rejected.len();
@@ -164,16 +166,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             registration,
             tx,
             args,
-        } => prepare(&config, registration, tx, &args),
-        Command::Serve { stdio: _, config } => serve(&config),
+        } => prepare(&config, registration, tx, &args).await,
+        Command::Serve { stdio: _, config } => serve(&config).await,
     }
 }
 
 /// `fluent serve --stdio`: loads the configuration and registrations, then
 /// serves MCP on stdin and stdout until the client closes stdin.
-fn serve(config: &Path) -> anyhow::Result<ExitCode> {
+async fn serve(config: &Path) -> anyhow::Result<ExitCode> {
     let loaded = Config::load(config).with_context(|| format!("loading {}", config.display()))?;
-    let registrations = registration::load_dir(&loaded.registrations.dir)?;
+    let registrations = registration::load_dir(&loaded.registrations.dir).await?;
     for rejected in &registrations.rejected {
         tracing::warn!(
             bundle = %rejected.bundle.display(),
@@ -189,37 +191,30 @@ fn serve(config: &Path) -> anyhow::Result<ExitCode> {
         .context("building the tool catalog")?;
     let tools = handler.visible_tools().len();
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("starting the async runtime")?;
-    runtime.block_on(async {
-        tracing::info!(
-            registrations = catalog.len(),
-            tools,
-            "serving MCP over stdio"
-        );
-        let service = handler
-            .serve(rmcp::transport::stdio())
-            .await
-            .context("starting the MCP session")?;
-        let reason = service.waiting().await.context("serving MCP")?;
-        tracing::info!(?reason, "MCP session ended");
-        anyhow::Ok(())
-    })?;
+    tracing::info!(
+        registrations = catalog.len(),
+        tools,
+        "serving MCP over stdio"
+    );
+    let service = handler
+        .serve(rmcp::transport::stdio())
+        .await
+        .context("starting the MCP session")?;
+    let reason = service.waiting().await.context("serving MCP")?;
+    tracing::info!(?reason, "MCP session ended");
     Ok(ExitCode::SUCCESS)
 }
 
 /// `fluent prepare`: loads the configuration and registrations, prepares one
 /// transaction and prints the envelope or the error as JSON on stdout.
-fn prepare(
+async fn prepare(
     config: &Path,
     registration: String,
     tx: String,
     args: &str,
 ) -> anyhow::Result<ExitCode> {
     let loaded = Config::load(config).with_context(|| format!("loading {}", config.display()))?;
-    let registrations = registration::load_dir(&loaded.registrations.dir)?;
+    let registrations = registration::load_dir(&loaded.registrations.dir).await?;
     for rejected in &registrations.rejected {
         eprintln!(
             "warning: registration bundle {} rejected: {}",
@@ -237,15 +232,13 @@ fn prepare(
         }),
         Ok(args) => {
             let engine = Engine::new(&loaded, &registrations.catalog);
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("starting the async runtime")?;
-            runtime.block_on(engine.prepare(PrepareRequest {
-                registration,
-                tx,
-                args,
-            }))
+            engine
+                .prepare(PrepareRequest {
+                    registration,
+                    tx,
+                    args,
+                })
+                .await
         }
     };
 
@@ -276,6 +269,24 @@ struct RegistrationRow {
     tii_digest: String,
     skill_digest: String,
     bundle: String,
+    /// Registry-sourced registrations only; last, because TOML writes tables
+    /// after plain values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provenance: Option<ProvenanceRow>,
+}
+
+/// Where a registry-sourced TII came from. Recorded, not a verified
+/// publisher identity.
+#[derive(Serialize)]
+struct ProvenanceRow {
+    registry_url: String,
+    #[serde(rename = "ref")]
+    reference: String,
+    manifest_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_revision: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -299,6 +310,13 @@ impl RegistrationsReport {
                 tii_digest: r.tii_digest().to_string(),
                 skill_digest: r.skill_digest().to_string(),
                 bundle: r.bundle().display().to_string(),
+                provenance: r.provenance().map(|p| ProvenanceRow {
+                    registry_url: p.registry_url.clone(),
+                    reference: p.reference.clone(),
+                    manifest_digest: p.manifest_digest.clone(),
+                    source_digest: p.source_digest.clone(),
+                    source_revision: p.source_revision.clone(),
+                }),
             })
             .collect();
         let rejected = loaded

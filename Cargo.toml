@@ -48,10 +48,13 @@ pallas-crypto = "1.4"
 pallas-primitives = "1.4"
 # Verifies Byron address checksums, which pallas-addresses does not.
 crc = "3"
+# Anonymous pulls of registry artifacts over rustls; no test-registry helpers.
+oci-client = { version = "0.18", default-features = false, features = ["rustls-tls"] }
+futures-util = "0.3"
 # Validates caller arguments against generated tool schemas. No default
 # features, so no HTTP or file resolution of remote references.
 jsonschema = { version = "0.58", default-features = false }
-# Tests only: a scripted TRP endpoint.
+# Tests only: a scripted TRP endpoint and a fake OCI registry.
 wiremock = "0.6"
 
 [workspace.lints.rust]

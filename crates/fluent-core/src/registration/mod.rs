@@ -5,8 +5,10 @@
 //! contains a [`Manifest`] (`registration.toml`), a [`SkillDocument`]
 //! (`SKILL.md` unless the manifest names another path) and, for
 //! `source = "local"` only, the TII (`protocol.tii` unless the manifest names
-//! another path). Registry-sourced bundles carry no TII copy. Entries whose
-//! names start with `.` and plain files are skipped.
+//! another path). Registry-sourced bundles carry no TII copy: their TII is
+//! fetched with an [`OciFetcher`] and cached in [`CACHE_DIR`]; see
+//! [`crate::registry`]. Entries whose names start with `.` and plain files are
+//! skipped.
 //!
 //! [`load_dir`] loads every bundle, rejecting each one that breaks a rule with
 //! a [`FluentError`] whose message names the bundle and the rule. Registrations
@@ -32,6 +34,7 @@ use tx3_sdk::tii::Protocol;
 use tx3_sdk::tii::spec::TiiFile;
 
 use crate::error::FluentError;
+use crate::registry::{CACHE_DIR, OciFetcher, Provenance};
 
 pub use manifest::{
     DEFAULT_SKILL_PATH, DEFAULT_TII_PATH, Deployment, MANIFEST_FILE, Manifest, ManifestArtifact,
@@ -53,16 +56,24 @@ pub struct Registration {
     tii_digest: String,
     skill_digest: String,
     revision: String,
+    provenance: Option<Provenance>,
 }
 
 impl Registration {
-    /// Loads and validates the bundle in `bundle`.
+    /// Loads and validates the bundle in `bundle`. A registry-sourced TII is
+    /// fetched with the default [`OciFetcher`], caching in the [`CACHE_DIR`]
+    /// beside the bundle.
     ///
     /// Every failure is reported with the bundle path: a broken network rule
-    /// as [`FluentError::NetworkMismatch`], every other rule as
-    /// [`FluentError::RegistrationUnavailable`].
-    pub fn load(bundle: impl AsRef<Path>) -> Result<Registration, FluentError> {
+    /// as [`FluentError::NetworkMismatch`], every other rule, including a
+    /// failed fetch, as [`FluentError::RegistrationUnavailable`].
+    pub async fn load(bundle: impl AsRef<Path>) -> Result<Registration, FluentError> {
         let bundle = bundle.as_ref();
+        let parent = bundle.parent().unwrap_or(Path::new(""));
+        Registration::load_with(bundle, &OciFetcher::new(parent.join(CACHE_DIR))).await
+    }
+
+    async fn load_with(bundle: &Path, fetcher: &OciFetcher) -> Result<Registration, FluentError> {
         let reject = |reason: String| FluentError::RegistrationUnavailable {
             registration: bundle.display().to_string(),
             reason,
@@ -85,24 +96,32 @@ impl Registration {
             reject(format!("invalid {MANIFEST_FILE}: {}", problems.join("; ")))
         })?;
 
-        let tii_bytes = match manifest.protocol.source {
-            ProtocolSource::Local => {
+        let (tii_bytes, provenance) = match (manifest.protocol.source, &manifest.protocol.registry)
+        {
+            (ProtocolSource::Local, _) => {
                 let path = manifest.tii_path();
-                fs::read(bundle.join(path))
-                    .map_err(|err| reject(format!("cannot read TII {path}: {err}")))?
+                let bytes = fs::read(bundle.join(path))
+                    .map_err(|err| reject(format!("cannot read TII {path}: {err}")))?;
+                (bytes, None)
             }
-            ProtocolSource::Registry => {
+            (ProtocolSource::Registry, registry) => {
                 if bundle.join(DEFAULT_TII_PATH).exists() {
                     return Err(reject(format!(
                         "a registry-sourced bundle must not carry {DEFAULT_TII_PATH}: \
                          its TII comes only from the registry"
                     )));
                 }
-                return Err(reject(
-                    "source = \"registry\" is not supported yet: registry artifacts cannot be \
-                     fetched by this build"
-                        .to_string(),
-                ));
+                // `Manifest::validate` requires the table for this source.
+                let Some(registry) = registry else {
+                    return Err(reject(
+                        "[protocol.registry] is required when source = \"registry\"".to_string(),
+                    ));
+                };
+                let fetched = fetcher
+                    .fetch_tii(registry)
+                    .await
+                    .map_err(|err| reject(err.to_string()))?;
+                (fetched.tii, Some(fetched.provenance))
             }
         };
 
@@ -184,6 +203,7 @@ impl Registration {
             tii_digest,
             skill_digest,
             revision,
+            provenance,
         })
     }
 
@@ -245,6 +265,12 @@ impl Registration {
     /// The registration revision; see [`revision`].
     pub fn revision(&self) -> &str {
         &self.revision
+    }
+
+    /// Where a registry-sourced TII came from; `None` for local bundles.
+    /// Recorded, not verified: it does not identify the publisher.
+    pub fn provenance(&self) -> Option<&Provenance> {
+        self.provenance.as_ref()
     }
 }
 
@@ -356,13 +382,24 @@ pub struct Loaded {
     pub rejected: Vec<Rejection>,
 }
 
-/// Loads every bundle in `dir`.
+/// Loads every bundle in `dir`, fetching registry-sourced TII with the
+/// default [`OciFetcher`] and caching it in `dir`/[`CACHE_DIR`].
 ///
-/// A bundle that breaks a rule is rejected on its own; the others still load.
-/// Slugs must be unique across the directory: every bundle claiming a slug
-/// that another loaded bundle also claims is rejected, so neither is served.
-/// Fails only when `dir` itself cannot be read.
-pub fn load_dir(dir: impl AsRef<Path>) -> Result<Loaded, FluentError> {
+/// A bundle that breaks a rule, or whose TII cannot be fetched, is rejected
+/// on its own and logged; the others still load. Slugs must be unique across
+/// the directory: every bundle claiming a slug that another loaded bundle also
+/// claims is rejected, so neither is served. Fails only when `dir` itself
+/// cannot be read.
+pub async fn load_dir(dir: impl AsRef<Path>) -> Result<Loaded, FluentError> {
+    let dir = dir.as_ref();
+    load_dir_with(dir, &OciFetcher::new(dir.join(CACHE_DIR))).await
+}
+
+/// [`load_dir`] with a given fetcher, for example one with another timeout.
+pub async fn load_dir_with(
+    dir: impl AsRef<Path>,
+    fetcher: &OciFetcher,
+) -> Result<Loaded, FluentError> {
     let dir = dir.as_ref();
     let unreadable = |err: std::io::Error| FluentError::RegistrationUnavailable {
         registration: dir.display().to_string(),
@@ -384,7 +421,7 @@ pub fn load_dir(dir: impl AsRef<Path>) -> Result<Loaded, FluentError> {
     let mut loaded: BTreeMap<String, Vec<Registration>> = BTreeMap::new();
     let mut rejected = Vec::new();
     for bundle in bundles {
-        match Registration::load(&bundle) {
+        match Registration::load_with(&bundle, fetcher).await {
             Ok(registration) => loaded
                 .entry(registration.slug().to_string())
                 .or_default()
@@ -420,6 +457,14 @@ pub fn load_dir(dir: impl AsRef<Path>) -> Result<Loaded, FluentError> {
         }
     }
     rejected.sort_by(|a, b| a.bundle.cmp(&b.bundle));
+    for rejection in &rejected {
+        tracing::warn!(
+            bundle = %rejection.bundle.display(),
+            code = rejection.error.code().as_str(),
+            "{}",
+            rejection.error.message()
+        );
+    }
 
     Ok(Loaded {
         catalog: Catalog { registrations },

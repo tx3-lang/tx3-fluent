@@ -73,7 +73,7 @@ async fn prepares_a_transfer_on_preprod() {
     let config = Config::from_toml_str(&text, key).expect("live configuration");
     let registrations =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/registrations/valid");
-    let engine = Engine::new(&config, &load_dir(registrations).unwrap().catalog);
+    let engine = Engine::new(&config, &load_dir(registrations).await.unwrap().catalog);
 
     let prepared = engine
         .prepare(PrepareRequest {

@@ -117,8 +117,10 @@ pub fn load_config(text: &str, env: &[(&str, &str)]) -> Config {
     Config::from_toml_str(text, env.iter().copied()).expect("valid configuration")
 }
 
-fn handler(config: &Config) -> FluentHandler {
-    let registrations = load_dir(&config.registrations.dir).expect("load registrations");
+async fn handler(config: &Config) -> FluentHandler {
+    let registrations = load_dir(&config.registrations.dir)
+        .await
+        .expect("load registrations");
     assert!(registrations.rejected.is_empty());
     let catalog = Arc::new(registrations.catalog);
     let engine = Arc::new(Engine::new(config, &catalog));
@@ -128,7 +130,7 @@ fn handler(config: &Config) -> FluentHandler {
 
 /// Binds `config` the way `fluent serve --http` does.
 pub async fn bind(config: &Config) -> anyhow::Result<HttpServer> {
-    HttpServer::bind(config, handler(config)).await
+    HttpServer::bind(config, handler(config).await).await
 }
 
 /// A server running in the background until dropped.

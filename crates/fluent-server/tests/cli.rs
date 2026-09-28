@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use fluent_core::registration::sha256_digest;
+
 fn example(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/config")
@@ -244,6 +246,8 @@ fn registrations_check_prints_each_registration() {
             row["bundle"].as_str(),
             Some(dir.join(slug).display().to_string().as_str())
         );
+        // Local bundles carry no registry provenance.
+        assert!(!row.contains_key("provenance"), "{row}");
     }
 }
 
@@ -297,6 +301,77 @@ fn registrations_check_reports_an_unreadable_directory() {
         err.contains("cannot read the registrations directory"),
         "{err}"
     );
+}
+
+#[test]
+fn registrations_check_prints_registry_provenance() {
+    // A registry bundle whose artifact is already in a verified cache, so the
+    // check makes no request; nothing listens on the registry URL.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("registrations-registry");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    let transfer = registrations("valid/transfer_preprod");
+    let tii = std::fs::read(transfer.join("protocol.tii")).unwrap();
+    let source = b"tx transfer() {}\n";
+    let layer = |media_type: &str, bytes: &[u8]| {
+        serde_json::json!({
+            "mediaType": media_type,
+            "digest": sha256_digest(bytes),
+            "size": bytes.len(),
+        })
+    };
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": sha256_digest(b"{}"),
+            "size": 2,
+        },
+        "layers": [layer("application/tx3", source), layer("application/tii+json", &tii)],
+        "annotations": { "org.opencontainers.image.revision": "6bcfa90f" },
+    }))
+    .unwrap();
+    let digest = sha256_digest(&manifest);
+    let cache = dir.join(".cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join(format!("{digest}.manifest.json")), &manifest).unwrap();
+    std::fs::write(cache.join(format!("{digest}.tii")), &tii).unwrap();
+
+    let bundle = dir.join("transfer");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::copy(transfer.join("SKILL.md"), bundle.join("SKILL.md")).unwrap();
+    let text = std::fs::read_to_string(transfer.join("registration.toml")).unwrap();
+    let text = text.replacen(
+        "source = \"local\"",
+        &format!(
+            "source = \"registry\"\n\n[protocol.registry]\nurl = \"http://127.0.0.1:9\"\n\
+             ref = \"unknown/unknown:0.0.1\"\nmanifest_digest = \"{digest}\""
+        ),
+        1,
+    );
+    std::fs::write(bundle.join("registration.toml"), text).unwrap();
+
+    let (output, report) = check_registrations(&config_for("registrations-registry", &dir));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed = rows(&report, "registration");
+    assert_eq!(printed.len(), 1, "{report}");
+    assert_eq!(printed[0]["revision"].as_str(), Some("04948dcd8aa4"));
+    let provenance = printed[0]["provenance"]
+        .as_table()
+        .expect("a provenance table");
+    let expected = [
+        ("registry_url", "http://127.0.0.1:9".to_string()),
+        ("ref", "unknown/unknown:0.0.1".to_string()),
+        ("manifest_digest", digest),
+        ("source_digest", sha256_digest(source)),
+        ("source_revision", "6bcfa90f".to_string()),
+    ];
+    assert_eq!(provenance.len(), expected.len(), "{provenance}");
+    for (key, value) in expected {
+        assert_eq!(provenance[key].as_str(), Some(value.as_str()), "{key}");
+    }
 }
 
 const SENDER: &str = "addr_test1qrxchm0g4la6hqfd9wq6vuuldx7l20az52t7lvgpgujr8pvwmpzru5kuf4mpmvtaf0hlsjtz7t4r2h7tj9v3c02dhljq0wqkef";

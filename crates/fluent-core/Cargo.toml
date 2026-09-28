@@ -27,6 +27,8 @@ pallas-codec.workspace = true
 pallas-crypto.workspace = true
 pallas-primitives.workspace = true
 crc.workspace = true
+oci-client.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

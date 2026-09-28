@@ -51,7 +51,7 @@ fn fixture(path: &str) -> PathBuf {
         .join(path)
 }
 
-fn engine(trp_url: &str) -> Engine {
+async fn engine(trp_url: &str) -> Engine {
     let text = format!(
         r#"
         [registrations]
@@ -68,6 +68,7 @@ fn engine(trp_url: &str) -> Engine {
     Engine::new(
         &config,
         &load_dir(fixture("registrations/valid"))
+            .await
             .expect("the fixtures load")
             .catalog,
     )
@@ -110,6 +111,7 @@ async fn prepare_logs_no_argument_value_or_api_key() {
         .mount(&success)
         .await;
     engine(&success.uri())
+        .await
         .prepare(request(args()))
         .await
         .unwrap();
@@ -137,7 +139,7 @@ async fn prepare_logs_no_argument_value_or_api_key() {
         })))
         .mount(&failure)
         .await;
-    let failing = engine(&failure.uri());
+    let failing = engine(&failure.uri()).await;
     let err = failing.prepare(request(args())).await.unwrap_err();
     assert_eq!(err.code(), ErrorCode::InsufficientFunds);
 

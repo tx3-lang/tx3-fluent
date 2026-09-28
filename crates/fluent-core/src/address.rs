@@ -205,6 +205,7 @@ fn invalid(reason: String) -> FluentError {
     FluentError::InvalidArguments {
         reason,
         arguments: vec![ARGUMENT.to_owned()],
+        violations: Vec::new(),
     }
 }
 

@@ -298,3 +298,118 @@ fn registrations_check_reports_an_unreadable_directory() {
         "{err}"
     );
 }
+
+const SENDER: &str = "addr_test1qrxchm0g4la6hqfd9wq6vuuldx7l20az52t7lvgpgujr8pvwmpzru5kuf4mpmvtaf0hlsjtz7t4r2h7tj9v3c02dhljq0wqkef";
+const RECEIVER: &str = "addr_test1qpwms9gqr76nar77cja9yq6dl44zdn3wflmd96h4wp3ae9yzg29hdhjxjuf3jpgqq2df60v0aq63dn96ey9mh6njcatsdynmak";
+
+fn transfer_args() -> serde_json::Value {
+    serde_json::json!({
+        "quantity": 3_000_000,
+        "sender": SENDER,
+        "receiver": RECEIVER,
+        "middleman": SENDER
+    })
+}
+
+/// Runs `fluent prepare` for `transfer_preprod` with the given arguments text.
+fn prepare(config: &Path, registration: &str, args: &str) -> (Output, serde_json::Value) {
+    let output = fluent(
+        &[
+            "prepare",
+            "--config",
+            config.to_str().expect("a UTF-8 path"),
+            "--registration",
+            registration,
+            "--tx",
+            "transfer",
+            "--args",
+            args,
+        ],
+        &[],
+    );
+    let printed = serde_json::from_str(&stdout(&output))
+        .unwrap_or_else(|err| panic!("{err}: {}{}", stdout(&output), stderr(&output)));
+    (output, printed)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn prepare_prints_the_envelope() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let tx_hex = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fluent-core/tests/fixtures/tx/transfer-preprod.hex"),
+    )
+    .unwrap();
+    let hash = "b2698db18245555a24e2e38a1a1c1a9623465aacf28b19ac93f9287093e58f73";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": { "hash": hash, "tx": tx_hex.trim() }
+        })))
+        .mount(&server)
+        .await;
+
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("prepare-envelope.toml");
+    let text = format!(
+        "[registrations]\ndir = {}\n\n[networks.preprod]\ntrp_url = \"{}\"\n\n\
+         [auth]\nmode = \"none\"\n",
+        toml::Value::String(registrations("valid").display().to_string()),
+        server.uri()
+    );
+    std::fs::write(&path, text).unwrap();
+
+    let args = transfer_args().to_string();
+    let (output, envelope) =
+        tokio::task::spawn_blocking(move || prepare(&path, "transfer_preprod", &args))
+            .await
+            .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(envelope["status"], "prepared_unsigned");
+    assert_eq!(envelope["signed"], false);
+    assert_eq!(envelope["submitted"], false);
+    assert_eq!(envelope["tx_hash"], hash);
+    assert_eq!(
+        envelope["protocol"]["registration_slug"],
+        "transfer_preprod"
+    );
+    assert_eq!(envelope["summary"]["outputs"][0]["address"], RECEIVER);
+    assert_eq!(envelope["summary"]["outputs"][0]["lovelace"], 3_000_000);
+}
+
+#[test]
+fn prepare_prints_errors_as_json_and_fails() {
+    // The resolver is never contacted: every request fails before it.
+    let config = config_for("prepare-errors", &registrations("valid"));
+
+    let mut args = transfer_args();
+    args["tax"] = serde_json::json!(1);
+    let (output, printed) = prepare(&config, "transfer_preprod", &args.to_string());
+    assert!(!output.status.success());
+    assert_eq!(printed["error"]["code"], "invalid_arguments");
+    assert_eq!(
+        printed["error"]["message"],
+        "invalid arguments: deployment-bound value cannot be overridden"
+    );
+    assert_eq!(
+        printed["error"]["details"]["violations"],
+        serde_json::json!([{ "path": "/tax", "message": "deployment-bound value cannot be overridden" }])
+    );
+
+    let (output, printed) = prepare(&config, "nothing_here", &transfer_args().to_string());
+    assert!(!output.status.success());
+    assert_eq!(printed["error"]["code"], "unknown_protocol");
+
+    let (output, printed) = prepare(&config, "transfer_preprod", "{\"quantity\": 12345");
+    assert!(!output.status.success());
+    assert_eq!(printed["error"]["code"], "invalid_arguments");
+    let message = printed["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("invalid arguments: --args is not valid JSON"),
+        "{message}"
+    );
+    assert!(!message.contains("12345"), "{message}");
+}

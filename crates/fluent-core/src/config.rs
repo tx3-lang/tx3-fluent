@@ -414,6 +414,14 @@ impl Config {
                     problems.push(format!("site.{key} is required when site.enabled = true"));
                 }
             }
+            // Users sign in with the MCP issuer and their selections live in
+            // the store.
+            if !matches!(self.auth, AuthConfig::Oidc { .. }) {
+                problems.push("site.enabled = true requires auth.mode = \"oidc\"".to_string());
+            }
+            if self.store.is_none() {
+                problems.push("site.enabled = true requires a [store] table".to_string());
+            }
         }
         if let Some(url) = &site.redirect_url {
             check_url(&mut problems, "site.redirect_url", url);
@@ -939,6 +947,8 @@ mod tests {
                 "site.oidc_client_id_env is required when site.enabled = true",
                 "site.oidc_client_secret_env is required when site.enabled = true",
                 "site.redirect_url is required when site.enabled = true",
+                "site.enabled = true requires auth.mode = \"oidc\"",
+                "site.enabled = true requires a [store] table",
             ]
         );
     }

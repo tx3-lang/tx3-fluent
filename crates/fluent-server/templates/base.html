@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Tx3 Fluent{% endblock %}</title>
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<header class="site-header">
+  <a class="wordmark" href="/">Tx3 <span>Fluent</span></a>
+  {% if let Some(user) = user %}
+  <nav class="site-nav">
+    <a href="/protocols">Protocols</a>
+    <a href="/connect">Connect ChatGPT</a>
+  </nav>
+  <div class="account">
+    <span class="signed-in">Signed in as <strong>{{ user.display }}</strong></span>
+    <form method="post" action="/auth/logout">
+      <input type="hidden" name="csrf" value="{{ user.csrf }}">
+      <button type="submit" class="link">Sign out</button>
+    </form>
+  </div>
+  {% endif %}
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer class="site-footer">
+  Tx3 Fluent prepares unsigned transactions. Your wallet signs; nothing is submitted for you.
+</footer>
+</body>
+</html>

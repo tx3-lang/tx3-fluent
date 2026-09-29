@@ -10,10 +10,13 @@
 //!   transaction tools.
 //! - [`metrics`] — the service measurements served at `GET /metrics`.
 //! - [`logging`] — the filter that keeps message bodies out of the logs.
+//! - [`site`] — the companion site where users sign in and choose their
+//!   registrations.
 
 pub mod http;
 pub mod limits;
 pub mod logging;
 pub mod mcp;
 pub mod metrics;
+pub mod site;
 pub mod store;

@@ -13,6 +13,7 @@ use fluent_server::http::{HttpServer, shutdown_signal};
 use fluent_server::limits::{Gate, Limits, Quota};
 use fluent_server::logging;
 use fluent_server::mcp::{AllRegistrations, FluentHandler, Scoping, error_json};
+use fluent_server::site::Site;
 use fluent_server::store::{Store, UserScopes};
 use rmcp::ServiceExt;
 use serde::Serialize;
@@ -65,9 +66,10 @@ enum Command {
     },
     /// Serve the loaded registrations' tools over MCP. Logs go to stderr as
     /// JSON lines. Over HTTP with `oidc` authentication and a `[store]`, each
-    /// user sees the registrations they selected; otherwise every session sees
-    /// every registration. Transaction tools run under `[limits]`; over HTTP
-    /// with a `[store]`, each principal's daily quota is enforced.
+    /// user sees the registrations they selected, and chooses them on the site
+    /// when `[site].enabled`; otherwise every session sees every registration.
+    /// Transaction tools run under `[limits]`; over HTTP with a `[store]`, each
+    /// principal's daily quota is enforced.
     #[command(group(ArgGroup::new("transport").required(true).args(["stdio", "http"])))]
     Serve {
         /// Speak MCP over stdin and stdout.
@@ -268,12 +270,17 @@ async fn serve(config: &Path, http: bool) -> anyhow::Result<ExitCode> {
         Some(store) if http => Some(Store::open(&store.sqlite_path).await?),
         _ => None,
     };
-    let scoping: Arc<dyn Scoping> = match (&store, &loaded.auth) {
+    // The site shares the store with the scopes, so its selection changes
+    // reach open sessions as `tools/list_changed`.
+    let (scoping, site): (Arc<dyn Scoping>, Option<Site>) = match (&store, &loaded.auth) {
         (Some(store), AuthConfig::Oidc { .. }) => {
             tracing::info!("each user sees the registrations they selected");
-            Arc::new(UserScopes::new(store.clone(), Arc::clone(&catalog)))
+            let site = Site::new(&loaded, store.clone(), Arc::clone(&catalog))
+                .context("configuring the site")?;
+            let scoping = Arc::new(UserScopes::new(store.clone(), Arc::clone(&catalog)));
+            (scoping, site)
         }
-        _ => Arc::new(AllRegistrations::new(&catalog)),
+        _ => (Arc::new(AllRegistrations::new(&catalog)), None),
     };
     let limits = &loaded.limits;
     let quota = store.map(|store| {
@@ -292,10 +299,12 @@ async fn serve(config: &Path, http: bool) -> anyhow::Result<ExitCode> {
     let tools = handler.tools().len();
 
     if http {
-        let server = HttpServer::bind(&loaded, handler).await?;
+        let site_enabled = site.is_some();
+        let server = HttpServer::bind_with_site(&loaded, handler, site).await?;
         tracing::info!(
             registrations = catalog.len(),
             tools,
+            site = site_enabled,
             address = %server.local_addr()?,
             "serving MCP over HTTP"
         );

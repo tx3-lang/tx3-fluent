@@ -265,7 +265,9 @@ fn check_output(
     outputs: &[OutputSummary],
     used: &mut [bool],
 ) -> Check {
-    let same_address = |o: &OutputSummary| o.address.eq_ignore_ascii_case(&expected.address);
+    // Both spellings are canonical, and base58 is case-significant: an
+    // exact comparison is the only one that cannot widen the match.
+    let same_address = |o: &OutputSummary| o.address == expected.address;
     let found = outputs.iter().enumerate().position(|(index, output)| {
         !used[index]
             && same_address(output)
@@ -352,5 +354,51 @@ fn invalid(argument: &str, reason: String) -> FluentError {
         reason,
         arguments: vec![argument.to_string()],
         violations: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BYRON: &str = "Ae2tdPwUPEZLs4HtbuNey7tK4hTKrwNwYtGqp7bDfCy2WdR3P6735W5Yfpe";
+
+    fn pays(address: &str) -> Vec<OutputSummary> {
+        vec![OutputSummary {
+            address: address.to_string(),
+            lovelace: 1_000_000,
+            assets: vec![],
+        }]
+    }
+
+    fn expecting(address: &str) -> OutputExpectation {
+        OutputExpectation {
+            address: address.to_string(),
+            lovelace: 1_000_000,
+            assets: vec![],
+        }
+    }
+
+    #[test]
+    fn a_byron_output_matches_its_exact_address() {
+        let check = check_output(&expecting(BYRON), &pays(BYRON), &mut [false]);
+        assert!(check.passed, "{check:?}");
+    }
+
+    #[test]
+    fn a_byron_address_differing_only_in_case_does_not_match() {
+        let variant: String = BYRON
+            .chars()
+            .map(|c| {
+                if c.is_ascii_uppercase() {
+                    c.to_ascii_lowercase()
+                } else {
+                    c.to_ascii_uppercase()
+                }
+            })
+            .collect();
+        let check = check_output(&expecting(BYRON), &pays(&variant), &mut [false]);
+        assert!(!check.passed, "{check:?}");
+        assert_eq!(check.detail, "no output pays this address");
     }
 }

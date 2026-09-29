@@ -274,3 +274,96 @@ pub async fn rpc_reply(response: reqwest::Response) -> Value {
         .find(|message| message.get("id").is_some())
         .unwrap_or_else(|| panic!("no JSON-RPC reply in {body:?}"))
 }
+
+/// Preprod addresses the transfer fixture spends from and pays to.
+pub const SENDER: &str = "addr_test1qrxchm0g4la6hqfd9wq6vuuldx7l20az52t7lvgpgujr8pvwmpzru5kuf4mpmvtaf0hlsjtz7t4r2h7tj9v3c02dhljq0wqkef";
+pub const RECEIVER: &str = "addr_test1qpwms9gqr76nar77cja9yq6dl44zdn3wflmd96h4wp3ae9yzg29hdhjxjuf3jpgqq2df60v0aq63dn96ey9mh6njcatsdynmak";
+pub const TRANSFER_HASH: &str = "b2698db18245555a24e2e38a1a1c1a9623465aacf28b19ac93f9287093e58f73";
+pub const TRANSFER_TOOL: &str = "transfer_preprod_transfer";
+
+pub fn transfer_args() -> Value {
+    json!({
+        "quantity": 3_000_000,
+        "sender": SENDER,
+        "receiver": RECEIVER,
+        "middleman": SENDER
+    })
+}
+
+/// A scripted TRP endpoint answering `trp.resolve` with the real preprod
+/// transfer after `delay`.
+pub async fn resolver(delay: Duration) -> wiremock::MockServer {
+    use wiremock::matchers::{body_partial_json, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let hex = std::fs::read_to_string(fixtures().join("tx/transfer-preprod.hex"))
+        .expect("the transfer fixture")
+        .trim()
+        .to_string();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({ "method": "trp.resolve" })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": "1",
+                    "result": { "hash": TRANSFER_HASH, "tx": hex }
+                }))
+                .set_delay(delay),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A `token`-mode configuration on a loopback port with `trp_url` as the
+/// preprod resolver (its API key in `TRP_PREPROD_API_KEY`) and `limits` as
+/// the `[limits]` table body.
+pub fn limited_config_text(trp_url: &str, limits: &str) -> String {
+    let dir = fixtures().join("registrations/valid");
+    format!(
+        "[server]\nlisten = \"127.0.0.1:0\"\n\n\
+         [registrations]\ndir = {}\n\n\
+         [networks.preprod]\ntrp_url = \"{trp_url}\"\ntrp_api_key_env = \"TRP_PREPROD_API_KEY\"\n\n\
+         [limits]\n{limits}\n\n\
+         [auth]\nmode = \"token\"\ntoken_env = \"FLUENT_API_TOKEN\"\n",
+        toml::Value::String(dir.display().to_string())
+    )
+}
+
+/// Starts `config` with every registration visible and `limits` applied.
+pub async fn start_limited(config: &Config, limits: fluent_server::limits::Limits) -> Running {
+    let handler = handler(config).await.with_limits(limits);
+    Running::start_with(config, handler).await
+}
+
+/// The tool result of a `tools/call` reply: the structured value, or the
+/// `{"error": …}` object of an error result.
+pub fn tool_result(reply: &Value) -> Value {
+    let result = &reply["result"];
+    assert!(result.is_object(), "{reply}");
+    if result["isError"] == json!(true) {
+        let text = result["content"][0]["text"].as_str().expect("error text");
+        serde_json::from_str(text).expect("error JSON")
+    } else {
+        result["structuredContent"].clone()
+    }
+}
+
+/// Calls `name` with `arguments` in `session` as `token`.
+pub async fn call(
+    server: &Running,
+    token: &str,
+    session: &str,
+    name: &str,
+    arguments: Value,
+) -> Value {
+    let reply = rpc_reply(
+        server
+            .post_mcp(&call_tool(name, arguments), Some(token), Some(session))
+            .await,
+    )
+    .await;
+    tool_result(&reply)
+}

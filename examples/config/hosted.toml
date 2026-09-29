@@ -8,6 +8,8 @@ listen = "0.0.0.0:8080"
 # `fluent serve --http` advertises `{public_url}/mcp` as the protected resource
 # and its metadata at `{public_url}/.well-known/oauth-protected-resource`.
 public_url = "https://fluent.tx3.land"
+# Prometheus scrapes `/metrics` from outside the pod with this bearer token.
+metrics_token_env = "FLUENT_METRICS_TOKEN"
 
 [registrations]
 dir = "/var/lib/fluent/registrations"

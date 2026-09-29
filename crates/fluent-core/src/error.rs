@@ -230,11 +230,22 @@ pub enum FluentError {
         status: Option<u16>,
     },
 
+    /// The server is running as many resolutions as it allows and none
+    /// finished while the request waited. Reported as
+    /// [`ErrorCode::ResolverUnavailable`]: the caller may retry shortly.
+    #[error("the server is busy; try again shortly")]
+    ServerBusy {
+        /// How long the request waited for a resolution slot, in seconds.
+        waited_secs: u64,
+    },
+
     /// The caller has used their request quota.
     #[error("request quota of {limit} per day is exhausted")]
     QuotaExhausted {
         /// The daily limit that was reached.
         limit: u32,
+        /// When the quota resets: the next UTC midnight, as RFC 3339.
+        resets_at: String,
     },
 
     /// The caller is not authenticated or not allowed to make the request.
@@ -302,7 +313,9 @@ impl FluentError {
             FluentError::InputNotResolved { .. } => ErrorCode::InputNotResolved,
             FluentError::ScriptFailure { .. } => ErrorCode::ScriptFailure,
             FluentError::ResolverTimeout { .. } => ErrorCode::ResolverTimeout,
-            FluentError::ResolverUnavailable { .. } => ErrorCode::ResolverUnavailable,
+            FluentError::ResolverUnavailable { .. } | FluentError::ServerBusy { .. } => {
+                ErrorCode::ResolverUnavailable
+            }
             FluentError::QuotaExhausted { .. } => ErrorCode::QuotaExhausted,
             FluentError::Unauthorized => ErrorCode::Unauthorized,
             FluentError::Internal { .. } => ErrorCode::Internal,
@@ -365,7 +378,12 @@ impl FluentError {
                 }
                 Some(details)
             }
-            FluentError::QuotaExhausted { limit } => Some(json!({ "limit": limit })),
+            FluentError::ServerBusy { waited_secs } => {
+                Some(json!({ "reason": "server_busy", "waited_secs": waited_secs }))
+            }
+            FluentError::QuotaExhausted { limit, resets_at } => {
+                Some(json!({ "limit": limit, "resets_at": resets_at }))
+            }
             FluentError::Internal { details, .. } => details.clone(),
             FluentError::Unauthorized => None,
         }
@@ -417,14 +435,18 @@ mod tests {
                 network: "preprod".into(),
                 status: None,
             },
-            FluentError::QuotaExhausted { limit: 200 },
+            FluentError::ServerBusy { waited_secs: 5 },
+            FluentError::QuotaExhausted {
+                limit: 200,
+                resets_at: "2026-09-30T00:00:00Z".into(),
+            },
             FluentError::Unauthorized,
             FluentError::internal("disk on fire"),
         ]
     }
 
     #[test]
-    fn every_variant_maps_to_a_distinct_code() {
+    fn every_code_has_a_variant() {
         let codes: BTreeSet<ErrorCode> = one_of_each().iter().map(FluentError::code).collect();
         let all: BTreeSet<ErrorCode> = ErrorCode::ALL.into_iter().collect();
         assert_eq!(codes, all);
@@ -533,6 +555,30 @@ mod tests {
             status: None,
         };
         assert_eq!(err.details(), Some(json!({ "network": "preprod" })));
+    }
+
+    #[test]
+    fn a_busy_server_is_a_retryable_unavailable_resolver() {
+        let err = FluentError::ServerBusy { waited_secs: 5 };
+        assert_eq!(err.code(), ErrorCode::ResolverUnavailable);
+        assert_eq!(err.message(), "the server is busy; try again shortly");
+        assert_eq!(
+            err.details(),
+            Some(json!({ "reason": "server_busy", "waited_secs": 5 }))
+        );
+    }
+
+    #[test]
+    fn exhausted_quotas_say_when_they_reset() {
+        let err = FluentError::QuotaExhausted {
+            limit: 3,
+            resets_at: "2026-09-30T00:00:00Z".into(),
+        };
+        assert_eq!(err.message(), "request quota of 3 per day is exhausted");
+        assert_eq!(
+            err.details(),
+            Some(json!({ "limit": 3, "resets_at": "2026-09-30T00:00:00Z" }))
+        );
     }
 
     #[test]

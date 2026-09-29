@@ -147,6 +147,14 @@ impl Authenticator {
         matches!(self.mode, Mode::None)
     }
 
+    /// The static API token; `token` mode only.
+    pub fn api_token(&self) -> Option<&[u8]> {
+        match &self.mode {
+            Mode::Token(token) => Some(token),
+            Mode::None | Mode::Oidc(_) => None,
+        }
+    }
+
     /// The protected resource metadata; `oidc` mode only.
     pub fn metadata(&self) -> Option<&ProtectedResourceMetadata> {
         self.metadata.as_ref()
@@ -192,7 +200,7 @@ impl Authenticator {
 }
 
 /// The token of a `Bearer` credential; the scheme is case-insensitive.
-fn bearer(value: &str) -> Option<&str> {
+pub(crate) fn bearer(value: &str) -> Option<&str> {
     let (scheme, token) = value.split_once(' ')?;
     let token = token.trim();
     (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)

@@ -70,6 +70,7 @@ fn redacted_never_emits_a_value_read_from_an_env_variable() {
         ("FLUENT_SESSION_SECRET", "sentinel-session-0c4e"),
         ("FLUENT_OIDC_CLIENT_ID", "sentinel-client-id-7a13"),
         ("FLUENT_OIDC_CLIENT_SECRET", "sentinel-client-secret-e58d"),
+        ("FLUENT_METRICS_TOKEN", "sentinel-metrics-token-2b90"),
     ];
     for name in ["self-hosted.toml", "hosted.toml"] {
         let config = load(name, &secrets);

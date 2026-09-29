@@ -6,7 +6,14 @@
 //!   [authentication](http::auth).
 //! - [`store`] — the hosted store of users and their selections, and the
 //!   per-user tool scopes it backs.
+//! - [`limits`] — the daily quota, concurrency gate and global cutoff on
+//!   transaction tools.
+//! - [`metrics`] — the service measurements served at `GET /metrics`.
+//! - [`logging`] — the filter that keeps message bodies out of the logs.
 
 pub mod http;
+pub mod limits;
+pub mod logging;
 pub mod mcp;
+pub mod metrics;
 pub mod store;

@@ -251,6 +251,41 @@ impl Store {
         Ok(user)
     }
 
+    /// Counts one request by `sub` on UTC day `day` (days since the Unix
+    /// epoch) unless they already made `limit` that day. Returns the day's
+    /// count including this request, or `None` when the quota is exhausted
+    /// and nothing was counted. Forgets `sub`'s earlier days.
+    pub async fn consume_quota(
+        &self,
+        sub: &str,
+        day: i64,
+        limit: u32,
+    ) -> Result<Option<u32>, FluentError> {
+        let mut tx = self.pool.begin().await.map_err(FluentError::internal)?;
+        sqlx::query("DELETE FROM quota_usage WHERE sub = ?1 AND day < ?2")
+            .bind(sub)
+            .bind(day)
+            .execute(&mut *tx)
+            .await
+            .map_err(FluentError::internal)?;
+        // The conditional update leaves an exhausted row alone and returns
+        // nothing, so the check and the increment are one statement.
+        let count: Option<(u32,)> = sqlx::query_as(
+            "INSERT INTO quota_usage (sub, day, count) VALUES (?1, ?2, 1) \
+             ON CONFLICT (sub, day) DO UPDATE SET count = quota_usage.count + 1 \
+             WHERE quota_usage.count < ?3 \
+             RETURNING count",
+        )
+        .bind(sub)
+        .bind(day)
+        .bind(limit)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(FluentError::internal)?;
+        tx.commit().await.map_err(FluentError::internal)?;
+        Ok(count.map(|(count,)| count))
+    }
+
     /// The scope of `sub` against `catalog`.
     pub fn scope_for(&self, sub: &str, catalog: &Arc<Catalog>) -> UserScope {
         UserScope {
@@ -403,6 +438,23 @@ mod tests {
         assert!(store.user("mallory").await.unwrap().is_none());
         store.revoke("mallory").await.unwrap();
         assert!(store.user("mallory").await.unwrap().unwrap().is_revoked());
+    }
+
+    #[tokio::test]
+    async fn quotas_count_per_subject_and_day_up_to_the_limit() {
+        let (_dir, store) = store().await;
+        assert_eq!(store.consume_quota("alice", 10, 2).await.unwrap(), Some(1));
+        assert_eq!(store.consume_quota("alice", 10, 2).await.unwrap(), Some(2));
+        assert_eq!(store.consume_quota("alice", 10, 2).await.unwrap(), None);
+        assert_eq!(store.consume_quota("alice", 10, 2).await.unwrap(), None);
+        assert_eq!(store.consume_quota("bob", 10, 2).await.unwrap(), Some(1));
+        assert_eq!(store.consume_quota("alice", 11, 2).await.unwrap(), Some(1));
+
+        let days: Vec<(i64,)> = sqlx::query_as("SELECT day FROM quota_usage WHERE sub = 'alice'")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(days, [(11,)]);
     }
 
     #[tokio::test]

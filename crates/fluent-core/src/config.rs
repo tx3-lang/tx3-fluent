@@ -67,6 +67,11 @@ pub struct ServerConfig {
     /// The externally visible base URL, when it differs from `listen`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_url: Option<String>,
+    /// Variable holding a bearer token that may read `GET /metrics` from any
+    /// address; without one, only loopback callers (and, in `token` mode,
+    /// holders of the API token) may.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_token_env: Option<SecretRef>,
 }
 
 impl Default for ServerConfig {
@@ -74,6 +79,7 @@ impl Default for ServerConfig {
         ServerConfig {
             listen: default_listen(),
             public_url: None,
+            metrics_token_env: None,
         }
     }
 }
@@ -440,6 +446,11 @@ impl Config {
 
     /// Every secret with the dotted key that names it.
     fn secrets(&self) -> impl Iterator<Item = (String, &SecretRef)> {
+        let server = self
+            .server
+            .metrics_token_env
+            .as_ref()
+            .map(|secret| ("server.metrics_token_env".to_string(), secret));
         let networks = self.networks.iter().filter_map(|(name, n)| {
             let secret = n.trp_api_key_env.as_ref()?;
             Some((format!("networks.{name}.trp_api_key_env"), secret))
@@ -458,10 +469,11 @@ impl Config {
         ]
         .into_iter()
         .filter_map(|(key, secret)| Some((key.to_string(), secret.as_ref()?)));
-        networks.chain(auth).chain(site)
+        server.into_iter().chain(networks).chain(auth).chain(site)
     }
 
     fn secrets_mut(&mut self) -> impl Iterator<Item = &mut SecretRef> {
+        let server = self.server.metrics_token_env.as_mut();
         let networks = self
             .networks
             .values_mut()
@@ -477,7 +489,7 @@ impl Config {
         ]
         .into_iter()
         .flatten();
-        networks.chain(auth).chain(site)
+        server.into_iter().chain(networks).chain(auth).chain(site)
     }
 }
 
@@ -495,7 +507,7 @@ enum ValueKind {
 /// The type of the key an override path names, or `None` for unknown keys.
 fn override_kind(path: &[&str]) -> Option<ValueKind> {
     let kind = match path {
-        ["server", "listen" | "public_url"] => ValueKind::String,
+        ["server", "listen" | "public_url" | "metrics_token_env"] => ValueKind::String,
         ["registrations", "dir"] => ValueKind::String,
         ["networks", name, "trp_url" | "trp_api_key_env"] if !name.is_empty() => ValueKind::String,
         [

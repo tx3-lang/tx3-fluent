@@ -10,12 +10,15 @@ use fluent_core::config::AuthConfig;
 use fluent_core::registration::{self, Loaded};
 use fluent_core::{Config, Engine, FluentError, PrepareRequest};
 use fluent_server::http::{HttpServer, shutdown_signal};
+use fluent_server::limits::{Gate, Limits, Quota};
+use fluent_server::logging;
 use fluent_server::mcp::{AllRegistrations, FluentHandler, Scoping, error_json};
 use fluent_server::store::{Store, UserScopes};
 use rmcp::ServiceExt;
 use serde::Serialize;
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
 
 /// Tx3 Fluent: prepare Tx3 protocol transactions for agents and wallets.
 #[derive(Debug, Parser)]
@@ -63,7 +66,8 @@ enum Command {
     /// Serve the loaded registrations' tools over MCP. Logs go to stderr as
     /// JSON lines. Over HTTP with `oidc` authentication and a `[store]`, each
     /// user sees the registrations they selected; otherwise every session sees
-    /// every registration.
+    /// every registration. Transaction tools run under `[limits]`; over HTTP
+    /// with a `[store]`, each principal's daily quota is enforced.
     #[command(group(ArgGroup::new("transport").required(true).args(["stdio", "http"])))]
     Serve {
         /// Speak MCP over stdin and stdout.
@@ -144,13 +148,21 @@ enum RegistrationsCommand {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let logs = tracing_subscriber::fmt().with_writer(std::io::stderr);
     if matches!(cli.command, Command::Serve { .. }) {
-        // A server logs its lifecycle unless `RUST_LOG` says otherwise.
+        // A server logs its lifecycle unless `RUST_LOG` says otherwise, and
+        // never a message body.
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-        logs.with_env_filter(filter).json().init();
+        let logs = tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(std::io::stderr)
+            .with_filter(filter)
+            .with_filter(logging::no_message_bodies());
+        tracing_subscriber::registry().with(logs).init();
     } else {
-        logs.with_env_filter(EnvFilter::from_default_env()).init();
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
     }
 
     match run(cli).await {
@@ -252,22 +264,31 @@ async fn serve(config: &Path, http: bool) -> anyhow::Result<ExitCode> {
     }
     let catalog = Arc::new(registrations.catalog);
     let engine = Arc::new(Engine::new(&loaded, &catalog));
-    let scoping: Arc<dyn Scoping> = match (&loaded.store, &loaded.auth) {
-        (Some(store), AuthConfig::Oidc { .. }) if http => {
-            let path = &store.sqlite_path;
-            tracing::info!(
-                store = %path.display(),
-                "each user sees the registrations they selected"
-            );
-            Arc::new(UserScopes::new(
-                Store::open(path).await?,
-                Arc::clone(&catalog),
-            ))
+    let store = match &loaded.store {
+        Some(store) if http => Some(Store::open(&store.sqlite_path).await?),
+        _ => None,
+    };
+    let scoping: Arc<dyn Scoping> = match (&store, &loaded.auth) {
+        (Some(store), AuthConfig::Oidc { .. }) => {
+            tracing::info!("each user sees the registrations they selected");
+            Arc::new(UserScopes::new(store.clone(), Arc::clone(&catalog)))
         }
         _ => Arc::new(AllRegistrations::new(&catalog)),
     };
+    let limits = &loaded.limits;
+    let quota = store.map(|store| {
+        tracing::info!(
+            per_user_daily_quota = limits.per_user_daily_quota,
+            "each principal's daily quota is enforced"
+        );
+        Quota::new(store, limits.per_user_daily_quota)
+    });
     let handler = FluentHandler::new(Arc::clone(&catalog), engine, scoping)
-        .context("building the tool catalog")?;
+        .context("building the tool catalog")?
+        .with_limits(Limits {
+            gate: Gate::from_limits(limits),
+            quota,
+        });
     let tools = handler.tools().len();
 
     if http {

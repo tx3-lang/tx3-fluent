@@ -25,8 +25,18 @@
 //! [`FluentHandler::for_session`]. It records the [`Principal`] that
 //! initialized the session and refuses requests authenticated as anyone
 //! else.
+//!
+//! Transaction tools run under the handler's [`Limits`]: the session
+//! principal's daily quota, the server-wide concurrency gate and the global
+//! cutoff. Each tool call is traced in a `tool_call` span carrying the tool,
+//! `sub_hash` (a SHA-256 prefix of the principal's `sub`), `registration`,
+//! `tx`, the argument *names*, `outcome` (`ok` or the error code) and
+//! `duration_ms`; never an argument value. Transaction tool calls are also
+//! [measured](crate::metrics).
 
+use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use fluent_core::catalog::{
     self, GET_SKILL_TOOL, INSPECT_ADDRESS_TOOL, SkillProtocol, SkillResult, ToolDescriptor,
@@ -42,11 +52,15 @@ use rmcp::model::{
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 use tokio_util::sync::{CancellationToken, DropGuard};
-use tracing::{info, warn};
+use tracing::field::Empty;
+use tracing::{Instrument, info, info_span, warn};
 
 use crate::http::auth::Principal;
+use crate::limits::Limits;
+use crate::metrics;
 
 /// The server name reported to clients.
 pub const SERVER_NAME: &str = "tx3-fluent";
@@ -126,16 +140,21 @@ pub struct FluentHandler {
     engine: Arc<Engine>,
     scoping: Arc<dyn Scoping>,
     tools: Arc<[ToolDescriptor]>,
+    limits: Limits,
     /// Who initialized this session; `None` inside when nobody authenticated.
     principal: OnceLock<Option<Principal>>,
     /// What this session sees, chosen at `initialize`.
     scope: OnceLock<Arc<dyn ToolScope>>,
     /// Stops the session's change watcher when the session's handler drops.
     watcher: OnceLock<DropGuard>,
+    /// Counts the session as active from `initialize` until it drops.
+    active: OnceLock<metrics::Session>,
 }
 
 impl FluentHandler {
-    /// Builds the handler and computes the catalog's tools once.
+    /// Builds the handler and computes the catalog's tools once. Its
+    /// transaction tools are gated by the default `[limits]` and unmetered;
+    /// see [`FluentHandler::with_limits`].
     ///
     /// Fails as [`catalog::all_tools`] does: when a registration's tools
     /// cannot be built or two tools share a name.
@@ -150,23 +169,33 @@ impl FluentHandler {
             engine,
             scoping,
             tools,
+            limits: Limits::default(),
             principal: OnceLock::new(),
             scope: OnceLock::new(),
             watcher: OnceLock::new(),
+            active: OnceLock::new(),
         })
     }
 
-    /// A handler for a new session: the same catalog, engine, scoping and
-    /// tools, and no principal or scope yet.
+    /// Applies `limits` to transaction tools, in this handler and every
+    /// session's.
+    pub fn with_limits(self, limits: Limits) -> FluentHandler {
+        FluentHandler { limits, ..self }
+    }
+
+    /// A handler for a new session: the same catalog, engine, scoping, tools
+    /// and limits, and no principal or scope yet.
     pub fn for_session(&self) -> FluentHandler {
         FluentHandler {
             catalog: Arc::clone(&self.catalog),
             engine: Arc::clone(&self.engine),
             scoping: Arc::clone(&self.scoping),
             tools: Arc::clone(&self.tools),
+            limits: self.limits.clone(),
             principal: OnceLock::new(),
             scope: OnceLock::new(),
             watcher: OnceLock::new(),
+            active: OnceLock::new(),
         }
     }
 
@@ -225,7 +254,9 @@ impl FluentHandler {
 
     /// Calls tool `name`; `None` when no registration defines it. A tool
     /// outside the session's scope fails as
-    /// [`FluentError::RegistrationUnavailable`].
+    /// [`FluentError::RegistrationUnavailable`]; a transaction tool runs
+    /// under the handler's [`Limits`], counted against the session
+    /// principal.
     pub async fn call(
         &self,
         name: &str,
@@ -247,15 +278,15 @@ impl FluentHandler {
             }));
         }
         let result = match (&tool.registration_slug, &tool.tx_name) {
-            (Some(slug), Some(tx)) => self
-                .engine
-                .prepare(PrepareRequest {
+            (Some(slug), Some(tx)) => {
+                let preparation = self.engine.prepare(PrepareRequest {
                     registration: slug.clone(),
                     tx: tx.clone(),
                     args: Value::Object(args),
-                })
-                .await
-                .and_then(to_json),
+                });
+                let sub = self.principal().map(|p| p.sub.as_str());
+                self.limits.apply(sub, preparation).await.and_then(to_json)
+            }
             _ if name == GET_SKILL_TOOL => only_string_arg(&args, "protocol")
                 .and_then(|p| self.skill(p, &visible).and_then(to_json)),
             _ if name == INSPECT_ADDRESS_TOOL => only_string_arg(&args, "address")
@@ -337,14 +368,16 @@ impl ServerHandler for FluentHandler {
                     warn!(code = %err.code(), "choosing the session's scope failed: {err}");
                     ErrorData::internal_error("the session's tools are unavailable", None)
                 })?;
-            if self.scope.set(scope).is_ok()
-                && let (Some(changes), Some(principal)) = (self.scoping.changes(), self.principal())
-            {
-                let _ = self.watcher.set(watch_changes(
-                    changes,
-                    principal.sub.clone(),
-                    context.peer.clone(),
-                ));
+            if self.scope.set(scope).is_ok() {
+                let _ = self.active.set(metrics::Session::start());
+                if let (Some(changes), Some(principal)) = (self.scoping.changes(), self.principal())
+                {
+                    let _ = self.watcher.set(watch_changes(
+                        changes,
+                        principal.sub.clone(),
+                        context.peer.clone(),
+                    ));
+                }
             }
         }
         context.peer.set_peer_info(request.clone());
@@ -380,23 +413,57 @@ impl ServerHandler for FluentHandler {
         self.check_principal(&context)?;
         let name = request.name.as_ref();
         let args = request.arguments.unwrap_or_default();
-        let Some(result) = self.call(name, args).await else {
+        let descriptor = self.tools.iter().find(|t| t.name == name);
+        let (registration, tx) = descriptor
+            .map(|d| (d.registration_slug.as_deref(), d.tx_name.as_deref()))
+            .unwrap_or_default();
+        // Identifiers and argument names only: never an argument value.
+        let span = info_span!(
+            "tool_call",
+            tool = %name,
+            sub_hash = Empty,
+            registration = Empty,
+            tx = Empty,
+            arguments = %args.keys().map(String::as_str).collect::<Vec<_>>().join(","),
+            outcome = Empty,
+            duration_ms = Empty,
+        );
+        if let Some(principal) = self.principal() {
+            span.record("sub_hash", sub_hash(&principal.sub));
+        }
+        if let (Some(registration), Some(tx)) = (registration, tx) {
+            span.record("registration", registration);
+            span.record("tx", tx);
+        }
+
+        let started = Instant::now();
+        let Some(result) = self.call(name, args).instrument(span.clone()).await else {
             return Err(ErrorData::invalid_params(
                 format!("unknown tool `{name}`"),
                 None,
             ));
         };
-        // Only the tool and the outcome: never an argument value.
-        let result = match result {
+        let elapsed = started.elapsed();
+        let outcome = match &result {
+            Ok(_) => "ok",
+            Err(err) => err.code().as_str(),
+        };
+        let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        span.record("outcome", outcome);
+        span.record("duration_ms", duration_ms);
+        if let (Some(registration), Some(tx)) = (registration, tx) {
+            metrics::prepared(registration, tx, outcome, elapsed);
+        }
+        let result = span.in_scope(|| match result {
             Ok(value) => {
-                info!(tool = %name, "tool call succeeded");
+                info!(tool = %name, outcome, duration_ms, "tool call succeeded");
                 CallToolResult::structured(value)
             }
             Err(err) => {
-                info!(tool = %name, code = %err.code(), "tool call failed");
+                info!(tool = %name, code = %err.code(), outcome, duration_ms, "tool call failed");
                 CallToolResult::error(vec![ContentBlock::text(error_json(&err).to_string())])
             }
-        };
+        });
         Ok(result.into())
     }
 }
@@ -437,6 +504,16 @@ pub fn request_principal(context: &RequestContext<RoleServer>) -> Option<Princip
         .get::<http::request::Parts>()
         .and_then(|parts| parts.extensions.get::<Principal>())
         .cloned()
+}
+
+/// The first 12 hex digits of the SHA-256 of `sub`: enough to follow one
+/// user through the logs without naming them.
+pub fn sub_hash(sub: &str) -> String {
+    let digest = Sha256::digest(sub.as_bytes());
+    digest.iter().take(6).fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    })
 }
 
 /// A [`FluentError`] as `{"error": {code, message, details}}`; `details` is

@@ -14,7 +14,10 @@ transaction preparation engine, and the MCP server over stdio and over
 Streamable HTTP with bearer-token or OAuth 2.1 (OIDC) authentication, and the
 hosted SQLite store of users and their registration selections that scopes each
 OIDC user's tools (`fluent admin` revokes a user or prints their selections).
-Quotas and the site are added later.
+Transaction tools run under public-service limits (a daily quota per user, a
+server-wide concurrency gate and a global cutoff), and the HTTP server exposes
+Prometheus metrics at `/metrics`; see [the operations guide](docs/operations.md).
+The site is added later.
 
 ## Layout
 
@@ -23,6 +26,7 @@ Quotas and the site are added later.
 | `crates/fluent-core` | Library: configuration, errors, result envelopes, address inspection, registration bundles, tool catalog, preparation engine and transaction summaries. |
 | `crates/fluent-server` | The `fluent` binary: CLI, the MCP server over stdio and HTTP, and the hosted selection store (migrations in `migrations/`); later the site. |
 | `examples/config` | Example configurations, loaded by the tests. |
+| `docs/operations.md` | Operating a server: metrics, setting limits from them, and what is logged. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
 | `crates/fluent-core/tests/golden` | Reviewed tool descriptor lists the catalog tests compare against. |
@@ -140,8 +144,9 @@ fluent serve --stdio --config fluent.toml
 
 `serve --stdio` loads the configuration and the registrations, then speaks MCP
 on stdin and stdout until the client closes stdin. Logs go to stderr as JSON
-lines (`RUST_LOG` filters them; the default is `info`); stdout carries only
-MCP messages. Rejected bundles are logged and do not stop the others; a
+lines (`RUST_LOG` filters them; the default is `info`, and the MCP library's
+`debug` and `trace` events, which carry message bodies, are always dropped);
+stdout carries only MCP messages. Rejected bundles are logged and do not stop the others; a
 catalog whose tools cannot be built (see [Tool catalog](#tool-catalog)) stops
 the server at startup.
 
@@ -204,6 +209,7 @@ them.
 | `/mcp` | yes | MCP: `POST` messages, `GET` the session's event stream, `DELETE` the session. |
 | `GET /healthz` | no | `{"status": "ok", "version": "<crate version>"}`. |
 | `GET /.well-known/oauth-protected-resource` | no | [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) metadata, `oidc` mode only; also under `…/mcp`. |
+| `GET /metrics` | loopback or token | Prometheus metrics; see [the operations guide](docs/operations.md#metrics). |
 
 Every request to `/mcp` is authenticated as [`[auth]`](#auth-required) says:
 
@@ -244,6 +250,21 @@ A request body may be at most 256 KiB (`413` otherwise). To guard against DNS
 rebinding, `/mcp` only answers a `Host` naming `localhost`, a loopback
 address, the listen address or `public_url`'s host (`403` otherwise), so a
 public deployment behind a proxy needs `public_url`.
+
+Transaction tool calls run under [`[limits]`](#limits-optional): each must
+finish within `global_cutoff_secs` (`resolver_timeout` otherwise), at most
+`max_concurrent_resolutions` prepare at once (a call that waits 5 seconds for
+a slot fails as `resolver_unavailable` with `details.reason =
+"server_busy"`), and, when a `[store]` is configured, each principal may make
+`per_user_daily_quota` of them per UTC day (then `quota_exhausted`, with
+`details.resets_at` the next UTC midnight). Skill and address tools are not
+limited. See [the operations guide](docs/operations.md) for the metrics and
+how to set the limits.
+
+`GET /metrics` answers a direct loopback caller, or any caller presenting
+`Authorization: Bearer` with the token in `server.metrics_token_env` or, in
+`token` mode, the API token (`401` otherwise). A request carrying `Forwarded`
+or `X-Forwarded-For` came through a proxy and needs a token.
 
 To try it with MCP Inspector in `token` mode:
 
@@ -287,6 +308,7 @@ never serializes it. An empty value counts as unset. Redacted output shows
 | --- | --- | --- | --- |
 | `listen` | socket address | `"127.0.0.1:8080"` | Address and port `serve --http` listens on. |
 | `public_url` | URL | none | Externally visible base URL, advertised in the OAuth metadata. Required in `oidc` mode. |
+| `metrics_token_env` | variable name | none | Variable holding a bearer token that may read `GET /metrics` from any address. `serve --http` refuses to start when it is set and the variable is unset or empty. |
 
 ### `[registrations]` (required)
 
@@ -311,9 +333,9 @@ All values must be greater than zero.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `resolver_timeout_secs` | integer | `30` | Seconds one resolver call may take. Must not exceed `global_cutoff_secs`. |
-| `global_cutoff_secs` | integer | `45` | Seconds one request may take end to end. |
-| `max_concurrent_resolutions` | integer | `8` | Resolver calls in flight at once, server-wide. |
-| `per_user_daily_quota` | integer | `200` | Prepared transactions one caller may request per day. |
+| `global_cutoff_secs` | integer | `45` | Seconds one transaction tool call may take end to end, waiting for a slot included. |
+| `max_concurrent_resolutions` | integer | `8` | Transaction preparations in flight at once, server-wide. A call waits at most 5 seconds for a slot. |
+| `per_user_daily_quota` | integer | `200` | Transaction tool calls one principal may make per UTC day. Enforced by `serve --http` with a `[store]`. |
 
 ### `[auth]` (required)
 
@@ -331,7 +353,7 @@ See [Over HTTP](#over-http) for how each mode checks a request.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `sqlite_path` | path | required | SQLite database file. |
+| `sqlite_path` | path | required | SQLite database file: users, their selections and daily quota counts. |
 
 ### `[site]` (optional)
 

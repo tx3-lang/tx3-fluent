@@ -6,6 +6,7 @@
 //! | `/mcp` | yes | MCP over Streamable HTTP, one [`FluentHandler`] per session |
 //! | `GET /healthz` | no | `{"status": "ok", "version": …}` |
 //! | `GET /.well-known/oauth-protected-resource` | no | RFC 9728 metadata, `oidc` mode only |
+//! | `GET /metrics` | [`MetricsAccess`] | the [service measurements](crate::metrics) |
 //!
 //! Sessions live in memory. A request body may be at most
 //! [`MAX_BODY_BYTES`]. The `Host` header must name a loopback address, the
@@ -18,19 +19,21 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router, middleware};
 use fluent_core::Config;
-use http::StatusCode;
+use http::{HeaderMap, HeaderValue, StatusCode, header};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::json;
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp::FluentHandler;
+use crate::metrics::{self, Metrics};
 use auth::{Authenticator, METADATA_PATH};
 
 /// The largest request body accepted, in bytes.
@@ -47,8 +50,9 @@ impl HttpServer {
     /// Binds `[server].listen` and builds the routes for `handler`.
     ///
     /// Fails before binding when `auth.mode = "none"` and the listen address
-    /// is not loopback, or when the authenticator cannot be built (see
-    /// [`Authenticator::new`]).
+    /// is not loopback, when the authenticator cannot be built (see
+    /// [`Authenticator::new`]), or when `server.metrics_token_env` names an
+    /// unset variable.
     pub async fn bind(config: &Config, handler: FluentHandler) -> anyhow::Result<HttpServer> {
         let listen = config.server.listen;
         let public_url = config.server.public_url.as_deref();
@@ -60,10 +64,12 @@ impl HttpServer {
             );
         }
 
+        let metrics = MetricsAccess::new(config, &auth)?;
         let cancel = CancellationToken::new();
         let router = router(
             handler,
             auth,
+            metrics,
             allowed_hosts(listen, public_url),
             cancel.clone(),
         );
@@ -90,7 +96,10 @@ impl HttpServer {
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> anyhow::Result<()> {
         let cancel = self.cancel;
-        axum::serve(self.listener, self.router)
+        let app = self
+            .router
+            .into_make_service_with_connect_info::<SocketAddr>();
+        axum::serve(self.listener, app)
             .with_graceful_shutdown(async move {
                 shutdown.await;
                 cancel.cancel();
@@ -100,10 +109,13 @@ impl HttpServer {
     }
 }
 
-/// The routes: `/mcp` behind `auth`, then the public ones.
+/// The routes: `/mcp` behind `auth`, `/metrics` behind `metrics`, then the
+/// public ones. Installs the [metrics recorder](metrics::install). The
+/// router must be served with `ConnectInfo<SocketAddr>`.
 pub fn router(
     handler: FluentHandler,
     auth: Authenticator,
+    metrics: MetricsAccess,
     allowed_hosts: Vec<String>,
     cancel: CancellationToken,
 ) -> Router {
@@ -132,7 +144,82 @@ pub fn router(
         // up with the resource's path appended.
         .route(&format!("{METADATA_PATH}/mcp"), get(metadata))
         .with_state(auth)
+        .route("/metrics", get(serve_metrics).with_state(Arc::new(metrics)))
         .merge(protected)
+}
+
+/// Who may read `GET /metrics`: a direct loopback caller, or a caller
+/// presenting `server.metrics_token_env`'s token or, in `token` mode, the
+/// API token. A request carrying `Forwarded` or `X-Forwarded-For` came
+/// through a proxy, so its loopback peer vouches for nobody.
+pub struct MetricsAccess {
+    tokens: Vec<Vec<u8>>,
+    metrics: &'static Metrics,
+}
+
+impl MetricsAccess {
+    /// The access rule `config` and `auth` imply; installs the recorder.
+    ///
+    /// Fails when `server.metrics_token_env` names an unset or empty
+    /// variable.
+    pub fn new(config: &Config, auth: &Authenticator) -> anyhow::Result<MetricsAccess> {
+        let mut tokens = Vec::new();
+        if let Some(secret) = &config.server.metrics_token_env {
+            let token = secret.value().unwrap_or_default();
+            anyhow::ensure!(
+                !token.is_empty(),
+                "server.metrics_token_env names {}, which is unset or empty",
+                secret.var()
+            );
+            tokens.push(token.as_bytes().to_vec());
+        }
+        tokens.extend(auth.api_token().map(<[u8]>::to_vec));
+        Ok(MetricsAccess {
+            tokens,
+            metrics: metrics::install(),
+        })
+    }
+
+    fn allows(&self, peer: SocketAddr, headers: &HeaderMap) -> bool {
+        let proxied =
+            headers.contains_key(header::FORWARDED) || headers.contains_key("x-forwarded-for");
+        if peer.ip().is_loopback() && !proxied {
+            return true;
+        }
+        let Some(token) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(auth::bearer)
+        else {
+            return false;
+        };
+        self.tokens
+            .iter()
+            .any(|expected| bool::from(token.as_bytes().ct_eq(expected)))
+    }
+}
+
+async fn serve_metrics(
+    State(access): State<Arc<MetricsAccess>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !access.allows(peer, &headers) {
+        tracing::info!("metrics request rejected");
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"))],
+        )
+            .into_response();
+    }
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+        )],
+        access.metrics.render(),
+    )
+        .into_response()
 }
 
 /// The `Host` values the MCP endpoint accepts: loopback names, the listen

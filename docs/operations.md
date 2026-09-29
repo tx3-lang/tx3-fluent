@@ -28,8 +28,11 @@ Transaction tools (every tool except `fluent_get_skill` and
    waits up to 5 seconds for a slot, then fails as `resolver_unavailable`
    with `details.reason = "server_busy"`. Clients may retry it.
 
-Every failed call counts against the quota except a quota rejection itself;
-a call the gate turns away has already been counted.
+A call counts against the quota once it passes the scope check (a tool of a
+registration the user has not selected fails first, as
+`registration_unavailable`, and is not counted). It counts whatever happens
+next, including when the gate turns it away as busy; only the rejected call
+itself is not counted.
 
 ## Metrics
 
@@ -95,8 +98,8 @@ Start from the defaults, then adjust from a week of metrics:
   being slow.
 - **`global_cutoff_secs`** — Keep it a few seconds above
   `resolver_timeout_secs` plus the 5-second admission wait, so a call that
-  waited for a slot can still finish. Clients such as ChatGPT give up on
-  tool calls after roughly a minute; stay below that.
+  waited for a slot can still finish. MCP clients time tool calls out on
+  their own; keep the cutoff below the shortest client timeout you support.
 - **`per_user_daily_quota`** — Compare `fluent_quota_rejections_total` with
   the number of active users. Rejections from a handful of principals point
   at automation or abuse; revoke with `fluent admin revoke` rather than
@@ -107,27 +110,40 @@ Start from the defaults, then adjust from a week of metrics:
 The limits are read at startup; change them in the file or with
 `FLUENT_LIMITS__*` overrides and restart.
 
-### First readiness measurement
+### Load runs
 
-A load run against a scripted resolver answering in 200 ms, with the default
-limits except `max_concurrent_resolutions = 8`, is summarized in the pull
-request that introduced these limits. Repeat it after changing the limits or
-the deployment: start the server against a local resolver stub, open a
-session, then send the same `tools/call` from many clients, for example with
-[`oha`](https://github.com/hatoo/oha):
+[`scripts/load_run.py`](../scripts/load_run.py) (Python standard library only)
+serves a scripted resolver and drives the server with concurrent clients:
 
 ```sh
-oha -c 50 -n 500 -m POST \
-  -H 'content-type: application/json' \
-  -H 'accept: application/json, text/event-stream' \
-  -H "authorization: Bearer $FLUENT_API_TOKEN" \
-  -H "mcp-session-id: $SESSION" -H 'mcp-protocol-version: 2025-06-18' \
-  -d @call.json http://127.0.0.1:8080/mcp
-curl -s http://127.0.0.1:8080/metrics | grep '^fluent_'
+scripts/load_run.py stub --port 9999 --delay 0.2 &
+FLUENT_API_TOKEN=load-token fluent serve --http --config load.toml &   # trp_url = "http://127.0.0.1:9999"
+scripts/load_run.py drive --url http://127.0.0.1:8080 --token load-token --clients 50 --calls 10
 ```
 
-`oha` reports HTTP latency; MCP failures are tool results inside `200`
-responses, so read the outcomes from `fluent_prepare_total`.
+`drive` opens one session per client, has all of them call the transfer tool
+at once, and prints the latency histogram, the outcomes and the server's
+`fluent_*` series. Each client needs its own session and request ids:
+concurrent requests that share a JSON-RPC id in one session are not answered
+reliably, so a tool like `oha` or `hey` replaying one request is not a valid
+load test. MCP failures are tool results inside `200` responses, so read
+outcomes from the results or from `fluent_prepare_total`, not from HTTP
+statuses.
+
+The first readiness measurement (50 clients × 10 calls, debug build, on one
+laptop):
+
+| Run | Resolver | Limits | Throughput | p50 / p95 / max | Outcomes |
+| --- | --- | --- | --- | --- | --- |
+| Gate | 200 ms | defaults, no store | 38.6/s | 1.26 / 1.39 / 1.45 s | 500 `ok` |
+| Quota | 200 ms | defaults, `[store]` | — | 0.003 / 1.42 / 1.45 s | 200 `ok`, 300 `quota_exhausted` |
+| Busy | 1 s | `max_concurrent_resolutions = 2` | 9.9/s | 5.01 / 5.03 / 5.22 s | 100 `ok`, 400 `resolver_unavailable` (busy) |
+
+With eight slots and a 200 ms resolver the gate allows at most 40 calls a
+second, and the server sustained 38.6: latency is queueing for slots. The
+quota refused every call past the 200th in about a millisecond, without
+reaching the resolver. With two slots and a 1 s resolver, calls that could
+not start within the 5 second admission wait were turned away as busy.
 
 ## What is logged
 

@@ -122,14 +122,28 @@ def reply(text):
     except json.JSONDecodeError:
         for line in text.splitlines():
             if line.startswith("data:"):
-                message = json.loads(line[5:])
-                if "id" in message:
+                try:
+                    message = json.loads(line[5:])
+                except json.JSONDecodeError:
+                    continue  # A priming event without a message.
+                if isinstance(message, dict) and "id" in message:
                     return message
     raise ValueError(f"no JSON-RPC reply in {text!r}")
 
 
+def wait_until_healthy(url, attempts=100):
+    for _ in range(attempts):
+        try:
+            urllib.request.urlopen(url.rstrip("/") + "/healthz", timeout=2).read()
+            return
+        except OSError:
+            time.sleep(0.2)
+    raise SystemExit(f"{url} did not become healthy")
+
+
 def drive(url, token, clients, calls, tool):
     arguments = {"quantity": 3_000_000, "sender": SENDER, "receiver": RECEIVER, "middleman": SENDER}
+    wait_until_healthy(url)
     sessions = [Client(url, token) for _ in range(clients)]
     for client in sessions:
         client.initialize()

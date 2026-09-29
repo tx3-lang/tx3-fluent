@@ -50,8 +50,8 @@ subtle = "2"
 askama = "0.16"
 axum-extra = { version = "0.12", features = ["cookie-signed", "cookie-key-expansion"] }
 oauth2 = { version = "5", default-features = false, features = ["reqwest"] }
-# Cookie lifetimes, in the cookie crate's duration type.
-time = { version = "0.3", default-features = false }
+# Cookie lifetimes, in the cookie crate's duration type, and transcript times.
+time = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs", "sync"] }
 # The hosted store: users and their registration selections. `macros` only for
 # `migrate!`, which embeds the migrations; queries are checked at run time.

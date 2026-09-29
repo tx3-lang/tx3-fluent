@@ -32,6 +32,7 @@ Prometheus metrics at `/metrics`; see [the operations guide](docs/operations.md)
 | `docs/self-hosting.md` | Running your own server: the container, bundle authoring, networks, authentication, reloading and upgrading. |
 | `docs/stdio.md` | Registering `fluent serve --stdio` with Claude Desktop, MCP Inspector and other clients. |
 | `docs/hosted-deployment.md` | What the public deployment needs: image, volume, secrets, network, health and metrics. |
+| `docs/journey-evidence.md` | How to produce the spike's acceptance evidence: ChatGPT journeys, a transcript and decode checks. |
 | `Dockerfile`, `docker-compose.yml` | The container image, published as `ghcr.io/tx3-lang/tx3-fluent`, and a self-hosting Compose example. |
 | `tests/container_smoke.sh` | Builds the image and checks it serves the fixture registrations over HTTP. |
 | `docs/site` | Screenshots of the companion site. |
@@ -39,7 +40,9 @@ Prometheus metrics at `/metrics`; see [the operations guide](docs/operations.md)
 | `crates/fluent-core/tests/fixtures/registry` | Published registry artifacts (manifest and TII, byte for byte) that the hosted-bundle tests serve offline. |
 | `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
 | `crates/fluent-core/tests/golden` | Reviewed tool descriptor lists the catalog tests compare against. |
-| `crates/fluent-core/tests/fixtures/tx` | Real preprod transactions (CBOR hex) with their expected summaries, checked against the chain explorer. |
+| `crates/fluent-core/tests/fixtures/tx` | Real preprod transactions (CBOR hex) with their expected summaries, checked against the chain explorer, and a mainnet Strike withdrawal. |
+| `crates/fluent-core/tests/fixtures/trp` | Recorded `trp.resolve` responses, one per hosted bundle, that the parity tests replay. |
+| `crates/fluent-server/tests/parity.rs` | Hosted and self-hosted parity: stdio, HTTP `token` and HTTP `oidc` answer byte-identically. |
 
 ## Build and test
 
@@ -90,6 +93,21 @@ cargo test -p fluent-core --test live_preprod -- --nocapture
 
 The CI job `live preprod` runs it with the organization secrets of the same
 names, against the endpoint above.
+
+`crates/fluent-server/tests/live_hosted.rs` takes the same variables and
+prepares a transfer in hosted mode: the bundles in `deploy/hosted/registrations`,
+fetched from the registry, served in `oidc` mode (against a local JWKS) for a
+test user who selected `transfer_preprod`, then checks the CBOR with
+[`fluent verify`](#checking-a-transaction). The `Live` workflow
+(`.github/workflows/live.yml`) runs both live tests weekly and on manual
+dispatch, and skips green without the secrets.
+
+`crates/fluent-server/tests/parity.rs` runs the `fluent` binary over each
+hosted bundle three ways (`serve --stdio`, and `serve --http` in `token` mode
+and in `oidc` mode for a user who selected it), sends each the same
+`tools/list` and `tools/call`, and requires byte-identical JSON-RPC replies.
+The call resolves against a local resolver replaying the recorded response in
+`tests/fixtures/trp/`.
 
 ## Usage
 
@@ -164,6 +182,30 @@ Missing credentials are `null`. Byron addresses carry no credentials; their
 `network` comes from the address's network tag when present. `notes` states
 what the address cannot tell, such as which testnet it belongs to. Malformed
 input exits non-zero with an `invalid arguments` error.
+
+## Checking a transaction
+
+```sh
+fluent verify --cbor <hex> \
+  --expect-output 'addr_test1…=3000000' \
+  --expect-network preprod
+```
+
+`verify` decodes one transaction's CBOR (`-` reads it from stdin) on its own,
+without the arguments or the resolver that produced it, and checks it:
+
+- `--expect-output <address>=<lovelace>[+<policy_id>.<asset_name_hex>=<amount>]...`
+  (repeatable, at least one) must be matched by its own output, with exactly
+  that address, lovelace and native assets;
+- every output address must be on `--expect-network` (`mainnet`, `preprod`
+  or `preview`; addresses cannot tell the testnets apart);
+- each `--expect-signer <key hash>` (repeatable) must be a required signer.
+
+It prints `{tx_hash, summary, checks, verdict}` as JSON, each check with
+`check` (`output`, `network` or `signer`), `expected`, `passed` and `detail`,
+and `verdict: match|mismatch` on stderr. It exits 0 only when the verdict is
+`match`. A malformed expectation or CBOR prints
+`{"error": {"code": "invalid_arguments", …}}` and exits non-zero.
 
 ## Serving MCP
 
@@ -382,6 +424,23 @@ fluent serve --http --config fluent.local.toml
 ```
 
 and open `http://localhost:8080`.
+
+### Recording a transcript
+
+```sh
+fluent demo record --config fluent.toml --out evidence
+```
+
+`demo record` serves as `serve --http` does (`--stdio` for stdio) and writes
+`transcript-<UTC time>.md` in `--out`, created when missing, printing its path
+on stderr. Each `tools/list` and `tools/call` answered becomes one section:
+the principal's `sub:<sub_hash>`, the tools listed, or the tool called, its
+argument names, outcome and duration, and its result as JSON. Argument values
+are never recorded. Results are redacted: addresses are shortened to their
+ends, and `unsigned_tx_cbor_hex`, address `hex` and skill `markdown` are
+replaced by their length. A call to an unknown tool is recorded with outcome
+`unknown_tool`. Transcript events never reach the logs, whatever `RUST_LOG`
+says. See [the journey evidence guide](docs/journey-evidence.md).
 
 ## Configuration reference
 

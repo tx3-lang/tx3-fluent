@@ -69,6 +69,12 @@ pub fn decode(tx_hex: &str) -> Result<Summary, FluentError> {
     decode_hex(tx_hex).map_err(FluentError::internal)
 }
 
+/// [`decode`], saying why the CBOR cannot be decoded: for CBOR a person
+/// supplied, such as `fluent verify`'s, rather than a resolver's.
+pub fn try_decode(tx_hex: &str) -> Result<Summary, DecodeError> {
+    decode_hex(tx_hex)
+}
+
 fn decode_hex(tx_hex: &str) -> Result<Summary, DecodeError> {
     let bytes = hex::decode(tx_hex)?;
     let mut decoder = minicbor::Decoder::new(&bytes);

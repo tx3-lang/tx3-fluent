@@ -1,0 +1,40 @@
+name: Live
+
+# Checks Fluent against the live preprod network: the engine's live preprod
+# test (crates/fluent-core/tests/live_preprod.rs) and a hosted-mode transfer
+# preparation for a selected test user (crates/fluent-server/tests/live_hosted.rs),
+# which fetches the hosted bundles from the registry. Never on push or pull
+# request. Without the API key secret the URL stays empty and both tests skip
+# green, so the scheduled run is a no-op until the secrets are bound. Nothing
+# is signed or submitted.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * 1' # weekly live-drift check
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    name: live preprod
+    runs-on: ubuntu-latest
+    env:
+      FLUENT_TRP_URL_PREPROD: ${{ secrets.FLUENT_TRP_API_KEY_PREPROD != '' && 'https://cardano-preprod.trp-m1.demeter.run' || '' }}
+      FLUENT_TRP_API_KEY_PREPROD: ${{ secrets.FLUENT_TRP_API_KEY_PREPROD }}
+      TEST_PARTY_A_ADDRESS: ${{ secrets.TEST_PARTY_A_ADDRESS }}
+      TEST_PARTY_B_ADDRESS: ${{ secrets.TEST_PARTY_B_ADDRESS }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.94
+      - uses: Swatinem/rust-cache@v2
+      - name: engine, live preprod
+        run: cargo test --locked -p fluent-core --test live_preprod -- --nocapture
+      - name: hosted mode, selected test user
+        run: cargo test --locked -p fluent-server --test live_hosted -- --nocapture

@@ -170,7 +170,10 @@ Never logged, at any level:
 - bearer tokens, JWTs or their signatures: the `Authorization` header is
   removed once a request is authenticated;
 - the TRP API key, or any other secret named by a `*_env` key;
-- the principal's `sub` or email in the clear.
+- the principal's `sub` or email in the clear;
+- the transcript events `fluent demo record` writes to its own file (see
+  [the journey evidence guide](journey-evidence.md#record-the-session)):
+  they carry redacted results, and the log filter drops them.
 
 Errors returned to callers follow the same rule: their `details` hold
 identifiers, argument names, limits and counts only.

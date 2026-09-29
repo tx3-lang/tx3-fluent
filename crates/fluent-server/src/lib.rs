@@ -10,6 +10,8 @@
 //!   transaction tools.
 //! - [`metrics`] — the service measurements served at `GET /metrics`.
 //! - [`logging`] — the filter that keeps message bodies out of the logs.
+//! - [`transcript`] — the Markdown transcript of the tools listed and called
+//!   that `fluent demo record` writes.
 //! - [`site`] — the companion site where users sign in and choose their
 //!   registrations.
 
@@ -20,3 +22,4 @@ pub mod mcp;
 pub mod metrics;
 pub mod site;
 pub mod store;
+pub mod transcript;

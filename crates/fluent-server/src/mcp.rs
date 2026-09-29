@@ -33,6 +33,10 @@
 //! `tx`, the argument *names*, `outcome` (`ok` or the error code) and
 //! `duration_ms`; never an argument value. Transaction tool calls are also
 //! [measured](crate::metrics).
+//!
+//! Every `tools/list` and `tools/call` answered is also described to the
+//! [transcript](crate::transcript), with the call's result redacted; those
+//! events are never logged.
 
 use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
@@ -61,6 +65,7 @@ use tracing::{Instrument, info, info_span, warn};
 use crate::http::auth::Principal;
 use crate::limits::Limits;
 use crate::metrics;
+use crate::transcript;
 
 /// The server name reported to clients.
 pub const SERVER_NAME: &str = "tx3-fluent";
@@ -394,6 +399,12 @@ impl ServerHandler for FluentHandler {
             warn!(code = %err.code(), "listing the session's tools failed: {err}");
             ErrorData::internal_error("the session's tools are unavailable", None)
         })?;
+        tracing::trace!(
+            target: transcript::TARGET,
+            kind = "tools/list",
+            sub_hash = self.principal().map(|p| sub_hash(&p.sub)),
+            tools = %tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(","),
+        );
         Ok(ListToolsResult::with_all_items(
             tools.into_iter().map(to_tool).collect(),
         ))
@@ -418,13 +429,18 @@ impl ServerHandler for FluentHandler {
             .map(|d| (d.registration_slug.as_deref(), d.tx_name.as_deref()))
             .unwrap_or_default();
         // Identifiers and argument names only: never an argument value.
+        let arguments = args
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(",");
         let span = info_span!(
             "tool_call",
             tool = %name,
             sub_hash = Empty,
             registration = Empty,
             tx = Empty,
-            arguments = %args.keys().map(String::as_str).collect::<Vec<_>>().join(","),
+            arguments = %arguments,
             outcome = Empty,
             duration_ms = Empty,
         );
@@ -438,10 +454,18 @@ impl ServerHandler for FluentHandler {
 
         let started = Instant::now();
         let Some(result) = self.call(name, args).instrument(span.clone()).await else {
-            return Err(ErrorData::invalid_params(
-                format!("unknown tool `{name}`"),
-                None,
-            ));
+            let error = ErrorData::invalid_params(format!("unknown tool `{name}`"), None);
+            tracing::trace!(
+                target: transcript::TARGET,
+                kind = "tools/call",
+                sub_hash = self.principal().map(|p| sub_hash(&p.sub)),
+                tool = %name,
+                arguments = %arguments,
+                outcome = "unknown_tool",
+                duration_ms = 0_u64,
+                result = %json!({ "jsonrpc_error": { "code": error.code.0, "message": error.message } }),
+            );
+            return Err(error);
         };
         let elapsed = started.elapsed();
         let outcome = match &result {
@@ -454,6 +478,19 @@ impl ServerHandler for FluentHandler {
         if let (Some(registration), Some(tx)) = (registration, tx) {
             metrics::prepared(registration, tx, outcome, elapsed);
         }
+        tracing::trace!(
+            target: transcript::TARGET,
+            kind = "tools/call",
+            sub_hash = self.principal().map(|p| sub_hash(&p.sub)),
+            tool = %name,
+            arguments = %arguments,
+            outcome,
+            duration_ms,
+            result = %transcript::redact(&match &result {
+                Ok(value) => value.clone(),
+                Err(err) => error_json(err),
+            }),
+        );
         let result = span.in_scope(|| match result {
             Ok(value) => {
                 info!(tool = %name, outcome, duration_ms, "tool call succeeded");

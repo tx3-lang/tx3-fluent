@@ -13,6 +13,9 @@
 //! - [`engine`] — [`Engine`], which prepares a registration's transactions
 //!   through a TRP resolver.
 //! - [`summary`] — the reviewable summary decoded from a transaction's CBOR.
+//! - [`verify`] — [`verify`](verify::verify), an independent check of a
+//!   transaction's CBOR against the outputs, network and signers a person
+//!   expects.
 
 pub mod address;
 pub mod catalog;
@@ -23,6 +26,7 @@ pub mod error;
 pub mod registration;
 pub mod registry;
 pub mod summary;
+pub mod verify;
 
 pub use address::AddressReport;
 pub use catalog::ToolDescriptor;

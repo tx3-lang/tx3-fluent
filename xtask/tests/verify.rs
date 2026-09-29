@@ -1,14 +1,14 @@
-//! `verify::verify` against the real preprod transactions in
-//! `tests/fixtures/tx/` (see `tests/summary.rs`): a matching expectation, a
-//! wrong amount, a wrong address, a wrong network, native assets and required
-//! signers.
+//! `verify::verify` against the real transactions in
+//! `fluent-core/tests/fixtures/tx/` (see fluent-core's `tests/summary.rs`): a
+//! matching expectation, a wrong amount, a wrong address, a wrong network,
+//! native assets and required signers.
 
 use std::fs;
 use std::path::PathBuf;
 
 use fluent_core::ErrorCode;
 use fluent_core::registration::Network;
-use fluent_core::verify::{CheckKind, Expectations, OutputExpectation, Verdict, verify};
+use xtask::verify::{CheckKind, Expectations, OutputExpectation, Verdict, verify};
 
 /// The transfer's receiver, paid 3 ADA, and its sender, paid the change.
 const RECEIVER: &str = "addr_test1qpwms9gqr76nar77cja9yq6dl44zdn3wflmd96h4wp3ae9yzg29hdhjxjuf3jpgqq2df60v0aq63dn96ey9mh6njcatsdynmak";
@@ -24,7 +24,7 @@ const SCRIPT_SIGNER: &str = "f0a26fc170ad82b64a3d43dede08e78ea6e2028b5101058d026
 
 fn fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/tx")
+        .join("../crates/fluent-core/tests/fixtures/tx")
         .join(format!("{name}.hex"));
     fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("{}: {err}", path.display()))

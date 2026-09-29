@@ -1,9 +1,9 @@
 # Journey evidence
 
 How to produce the acceptance evidence for the Tx3 Fluent spike: real ChatGPT
-sessions against the hosted deployment, a server-side transcript of every tool
-the sessions listed and called, and an independent decode check of each
-prepared transaction. Only ChatGPT sessions count as acceptance evidence. An
+sessions against the hosted deployment, a transcript of every tool the
+sessions listed and called, rendered from the deployment's logs, and an
+independent decode check of each prepared transaction. Only ChatGPT sessions count as acceptance evidence. An
 MCP Inspector run (see [Dry run](#dry-run-with-mcp-inspector)) checks these
 steps but proves nothing about the journeys.
 
@@ -31,42 +31,48 @@ The evidence covers six items:
   preprod address (the receiver). For Strike, a mainnet address that holds
   STRIKE, or an existing staking position.
 - **Evidence directory.** One directory per session date, for example
-  `evidence/2026-10-01/`, outside this repository. It holds the transcript,
-  both conversation exports and the decode checks.
-- **The `fluent` binary**, from a release or `cargo build --release`, for
-  `fluent verify`.
+  `evidence/2026-10-01/`, outside this repository. It holds the saved logs,
+  the transcript, both conversation exports and the decode checks.
+- **A checkout of this repository** with the Rust toolchain, for
+  `cargo xtask verify` and `cargo xtask transcript`. These are development
+  tools: they are not part of the `fluent` binary or the container image.
 
 ## Record the session
 
-`fluent demo record` serves exactly as `fluent serve` does and also writes a
-Markdown transcript: one section per `tools/list` and `tools/call` answered,
-with the account's hashed subject (`sub:…`, the same `sub_hash` the logs use),
-tool and argument names, the outcome and the redacted result. Argument values
-are never recorded. Addresses are shortened to their ends. The transaction
-CBOR, address hex and skill bodies are replaced by their length. Transaction
-hashes, amounts and error codes are kept, so each section can be matched to
-the conversation.
+Nothing about the deployment changes for recording: no special serve mode,
+no rollout. The server already logs, at `info`, one line per `tools/list`
+(the account's hashed subject and the tool names listed) and one per tool
+call (the tool, the argument **names**, the outcome and the duration). The
+logs never hold argument values, results or transaction hashes; see
+[What is logged](operations.md#what-is-logged).
 
-For the session, run the deployment's container with the recording command
-instead of its default (a rollout, so a founder act), then restore the
-default afterwards:
+After the session, save the deployment's logs for its time window and render
+the transcript offline:
 
 ```sh
-fluent demo record --config /data/fluent.toml --out /data/evidence
+kubectl logs <fluent pod> --since-time=2026-10-01T14:00:00Z \
+  > evidence/2026-10-01/fluent.log
+cargo xtask transcript --logs evidence/2026-10-01/fluent.log \
+  --out evidence/2026-10-01/transcript.md
 ```
 
-The server prints `recording the transcript to /data/evidence/transcript-<UTC time>.md`
-on stderr. Copy that file into the evidence directory when the session ends,
-for example with `kubectl cp`. Every restart starts a new transcript. The
-hashed subject of an account is the first 12 hex digits of the SHA-256 of its
-`sub`:
+Each `tools/list` and `tools/call` becomes one numbered section with its
+time, the principal (`sub:<hash>`), the tools listed or the tool called, its
+argument names and outcome. Other log lines are skipped. `--logs` can be
+repeated, for several pods or restarts, and entries are ordered by time.
+`--sub-hash <hash>` (repeatable) keeps only those accounts. Without
+`--logs`, the logs are read from stdin.
+
+The hashed subject of an account is the first 12 hex digits of the SHA-256 of
+its `sub`:
 
 ```sh
 printf %s 'auth0|…' | shasum -a 256 | cut -c1-12
 ```
 
 Note each account's hash in the evidence notes, so the transcript's
-principals can be attributed.
+principals can be attributed. Pair each section with the conversation export
+by time, principal and tool.
 
 ## E1. Two-account isolation
 
@@ -80,7 +86,8 @@ Expected: B's connector lists only `fluent_get_skill` and
 `fluent_inspect_address`, and ChatGPT says it cannot prepare a transfer. If
 ChatGPT calls the transfer tool anyway, the call fails as
 `registration_unavailable`. In the transcript, B's `tools/list` has 2 tools and
-A's has 3.
+A's has 3, and any call B makes to the transfer tool has outcome
+`registration_unavailable`.
 
 ## E2. Metadata refresh
 
@@ -139,7 +146,7 @@ For each prepared transaction, copy `unsigned_tx_cbor_hex` from the tool
 result in ChatGPT, then check it independently of Fluent's summary:
 
 ```sh
-fluent verify --cbor <hex> \
+cargo xtask verify --cbor <hex> \
   --expect-output '<receiver>=<lovelace>' \
   --expect-network preprod \
   > evidence/2026-10-01/verify-<tx_hash>.json
@@ -149,8 +156,9 @@ For native assets, add `+<policy_id>.<asset_name_hex>=<amount>` to the
 output. For a transaction that needs a signature, add
 `--expect-signer <key hash>`. `--cbor -` reads the CBOR from stdin.
 
-`fluent verify` decodes the CBOR on its own, without the arguments or the
-resolver that produced it. It prints the decoded summary, one check per
+`cargo xtask verify` decodes the CBOR on its own, with pallas directly: not
+with the arguments, the resolver or the `fluent` summary decoder that built
+the envelope. It prints the decoded summary, one check per
 expectation and the verdict, and exits 0 only on `match`:
 
 - each expected output is matched by its own output, with exactly the
@@ -175,12 +183,13 @@ In A's ChatGPT, ask:
 
 Expected: ChatGPT says Fluent prepares unsigned transactions only and cannot
 do these, without claiming anything happened on chain. If it calls a tool
-Fluent does not have, the transcript records the call with outcome
-`unknown_tool`.
+Fluent does not have, the logs record the call, and the transcript shows it
+with outcome `unknown_tool`.
 
 ## Evidence bundle
 
-Fill in one row per item. Transcript sections are cited by their number.
+Fill in one row per item. Transcript sections are cited by their number; keep
+the saved logs beside the transcript they were rendered from.
 
 | # | Conversation export | Transcript sections | Decode checks | Result and notes |
 | --- | --- | --- | --- | --- |
@@ -200,8 +209,9 @@ These steps can be rehearsed against a local hosted-mode instance with
 not acceptance evidence: Inspector sends the calls it is told to, so no model
 chooses them.
 
-1. Serve the hosted bundles in `oidc` mode with a `[store]` under
-   `fluent demo record`, with a copy of `hosted.toml` that listens on
+1. Serve the hosted bundles in `oidc` mode with a `[store]` with
+   `fluent serve --http`, saving stderr to a log file, with a copy of
+   `hosted.toml` that listens on
    `127.0.0.1:8080` with `public_url = "http://127.0.0.1:8080"` and the site
    disabled. Point `[auth]` at any issuer whose tokens you can mint, for
    example a local JWKS, and `audience` at `http://127.0.0.1:8080/mcp`.
@@ -228,4 +238,6 @@ chooses them.
    Inspector refuses to call a tool it did not list, so send B's transfer and
    the unsupported calls as plain MCP requests (for example with `curl`) to
    see the server's refusals in the transcript.
-4. Run [E5](#e5-decode-check) on the prepared CBOR.
+4. Stop the server and render the transcript from the saved log file with
+   `cargo xtask transcript`, as in [Record the session](#record-the-session).
+5. Run [E5](#e5-decode-check) on the prepared CBOR.

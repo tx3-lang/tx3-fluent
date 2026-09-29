@@ -51,6 +51,9 @@ wiremock.workspace = true
 rsa.workspace = true
 rand.workspace = true
 tempfile.workspace = true
+# The independent decode check and the log transcript, in the tests that
+# exercise them against a running server.
+xtask.workspace = true
 
 [lints]
 workspace = true

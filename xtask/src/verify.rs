@@ -1,8 +1,9 @@
 //! An independent check of a transaction's CBOR against what a person
 //! expects it to do.
 //!
-//! [`verify`] decodes the CBOR with [`summary::try_decode`], which reads the
-//! CBOR only, and checks the [`Summary`] against [`Expectations`]:
+//! [`verify`] decodes the CBOR with this crate's own [decoder](crate::decode),
+//! which reads the CBOR only, and checks the summary against
+//! [`Expectations`]:
 //!
 //! - each [`OutputExpectation`] must match its own output: the same address,
 //!   exactly the expected lovelace and exactly the expected native assets,
@@ -11,20 +12,20 @@
 //!   testnet: addresses cannot tell preprod from preview);
 //! - each expected signer must be among the required signers.
 //!
-//! The [`Verdict`] is [`Verdict::Match`] only when every check passes. Like
-//! the summary, the check is a pure function: no I/O, no clock, no
-//! configuration.
+//! The [`Verdict`] is [`Verdict::Match`] only when every check passes. The
+//! check is a pure function: no I/O, no clock, no configuration.
 
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::address::{self, AddressNetwork};
-use crate::envelope::{AssetAmount, OutputSummary, TransactionSummary};
-use crate::error::FluentError;
-use crate::registration::Network;
-use crate::summary::{self, Summary};
+use fluent_core::FluentError;
+use fluent_core::address::{self, AddressNetwork};
+use fluent_core::envelope::{AssetAmount, OutputSummary, TransactionSummary};
+use fluent_core::registration::Network;
+
+use crate::decode;
 
 /// One output the transaction must contain, written
 /// `<address>=<lovelace>[+<policy_id>.<asset_name_hex>=<amount>]...`.
@@ -216,10 +217,7 @@ pub fn verify(tx_hex: &str, expected: &Expectations) -> Result<Verification, Flu
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let Summary {
-        tx_hash,
-        transaction,
-    } = summary::try_decode(tx_hex.trim())
+    let (tx_hash, transaction) = decode::decode(tx_hex.trim())
         .map_err(|err| invalid("cbor", format!("the transaction cannot be decoded: {err}")))?;
 
     let mut checks = Vec::new();

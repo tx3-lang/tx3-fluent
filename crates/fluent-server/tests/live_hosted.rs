@@ -2,7 +2,7 @@
 //! the hosted bundles in `deploy/hosted/registrations/`, fetched from their
 //! pinned registry artifacts, served over HTTP in `oidc` mode with a
 //! `[store]`, for a test user who selected `transfer_preprod`. The prepared
-//! CBOR is then checked independently with `verify`.
+//! CBOR is then checked independently with `xtask::verify`.
 //!
 //! Skips green unless `FLUENT_TRP_URL_PREPROD` is set. When it is, the test
 //! also needs `TEST_PARTY_A_ADDRESS` (a funded preprod sender) and
@@ -28,12 +28,12 @@ use std::sync::Arc;
 use common::*;
 use fluent_core::Engine;
 use fluent_core::registration::{Network, load_dir};
-use fluent_core::verify::{Expectations, Verdict, verify};
 use fluent_server::mcp::FluentHandler;
 use fluent_server::store::{Select, Store, UserScopes};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+use xtask::verify::{Expectations, Verdict, verify};
 
 const API_KEY_VAR: &str = "FLUENT_TRP_API_KEY_PREPROD";
 const TEST_USER: &str = "live|fluent-hosted-ci";

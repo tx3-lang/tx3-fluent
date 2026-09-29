@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/fluent-core", "crates/fluent-server"]
+members = ["crates/fluent-core", "crates/fluent-server", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ publish = false
 
 # `cargo release <level>` bumps both crates together, makes one commit and
 # tags it `v{{version}}` (on fluent-server only, so the tag is made once).
+# `xtask` is development tooling and is never released.
 # Nothing is pushed or published: pushing the tag triggers the image build.
 [workspace.metadata.release]
 shared-version = true
@@ -26,6 +27,7 @@ publish = false
 # `workspace = true` so versions are declared in one place.
 [workspace.dependencies]
 fluent-core = { path = "crates/fluent-core" }
+xtask = { path = "xtask" }
 
 tx3-sdk = "=0.15.0"
 rmcp = { version = "=3.4.1", features = [
@@ -50,8 +52,8 @@ subtle = "2"
 askama = "0.16"
 axum-extra = { version = "0.12", features = ["cookie-signed", "cookie-key-expansion"] }
 oauth2 = { version = "5", default-features = false, features = ["reqwest"] }
-# Cookie lifetimes, in the cookie crate's duration type, and transcript times.
-time = { version = "0.3", default-features = false, features = ["std"] }
+# Cookie lifetimes, in the cookie crate's duration type.
+time = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs", "sync"] }
 # The hosted store: users and their registration selections. `macros` only for
 # `migrate!`, which embeds the migrations; queries are checked at run time.

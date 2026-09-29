@@ -7,8 +7,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{ArgGroup, Parser, Subcommand};
 use fluent_core::config::AuthConfig;
-use fluent_core::registration::{self, Loaded, Network};
-use fluent_core::verify::{self, Expectations, OutputExpectation, Verdict};
+use fluent_core::registration::{self, Loaded};
 use fluent_core::{Config, Engine, FluentError, PrepareRequest};
 use fluent_server::http::{HttpServer, shutdown_signal};
 use fluent_server::limits::{Gate, Limits, Quota};
@@ -16,7 +15,6 @@ use fluent_server::logging;
 use fluent_server::mcp::{AllRegistrations, FluentHandler, Scoping, error_json};
 use fluent_server::site::Site;
 use fluent_server::store::{Store, UserScopes};
-use fluent_server::transcript::{self, Recording, TranscriptLayer};
 use rmcp::ServiceExt;
 use serde::Serialize;
 use serde_json::Value;
@@ -90,53 +88,6 @@ enum Command {
         #[command(subcommand)]
         command: AdminCommand,
     },
-    /// Decode a transaction's CBOR on its own, without the arguments or the
-    /// resolver that produced it, and check it against the outputs, network
-    /// and signers you expect. Prints the summary, every check and the
-    /// verdict as JSON; exits 0 only on `match`.
-    Verify {
-        /// The transaction CBOR in hex, or `-` to read it from stdin.
-        #[arg(long, value_name = "HEX")]
-        cbor: String,
-        /// An output the transaction must contain, exactly:
-        /// `<address>=<lovelace>[+<policy_id>.<asset_name_hex>=<amount>]...`.
-        /// Repeat for several outputs.
-        #[arg(long, value_name = "OUTPUT", required = true)]
-        expect_output: Vec<String>,
-        /// The network every output address must belong to: `mainnet`,
-        /// `preprod` or `preview` (addresses cannot tell the testnets apart).
-        #[arg(long, value_name = "NETWORK")]
-        expect_network: String,
-        /// A key hash (28 bytes, hex) that must be a required signer. Repeat
-        /// for several.
-        #[arg(long, value_name = "HASH")]
-        expect_signer: Vec<String>,
-    },
-    /// Produce demonstration evidence.
-    Demo {
-        #[command(subcommand)]
-        command: DemoCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum DemoCommand {
-    /// Serve as `fluent serve` does (over HTTP unless `--stdio`) and write
-    /// every `tools/list` and `tools/call` it answers to a Markdown
-    /// transcript in `--out`: tool names, argument names, outcomes and
-    /// redacted results, never argument values. Prints the transcript's path
-    /// on stderr.
-    Record {
-        /// Speak MCP over stdin and stdout instead of Streamable HTTP.
-        #[arg(long)]
-        stdio: bool,
-        /// Configuration file to load; `FLUENT_*` environment overrides apply.
-        #[arg(long, value_name = "FILE")]
-        config: PathBuf,
-        /// Directory the transcript is written to; created when missing.
-        #[arg(long, value_name = "DIR")]
-        out: PathBuf,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -199,29 +150,7 @@ enum RegistrationsCommand {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let transcript = match &cli.command {
-        Command::Demo {
-            command: DemoCommand::Record { stdio, config, out },
-        } => {
-            let recording = Recording {
-                config: config.clone(),
-                transport: if *stdio { "stdio" } else { "HTTP" },
-            };
-            match TranscriptLayer::create(out, &recording) {
-                Ok(layer) => {
-                    eprintln!("recording the transcript to {}", layer.path().display());
-                    Some(layer.with_filter(transcript::only_transcript()))
-                }
-                Err(err) => {
-                    eprintln!("error: creating a transcript in {}: {err}", out.display());
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        _ => None,
-    };
-
-    if matches!(cli.command, Command::Serve { .. } | Command::Demo { .. }) {
+    if matches!(cli.command, Command::Serve { .. }) {
         // A server logs its lifecycle unless `RUST_LOG` says otherwise, and
         // never a message body.
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -230,10 +159,7 @@ async fn main() -> ExitCode {
             .with_writer(std::io::stderr)
             .with_filter(filter)
             .with_filter(logging::no_message_bodies());
-        tracing_subscriber::registry()
-            .with(logs)
-            .with(transcript)
-            .init();
+        tracing_subscriber::registry().with(logs).init();
     } else {
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
@@ -295,70 +221,8 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             args,
         } => prepare(&config, registration, tx, &args).await,
         Command::Serve { http, config, .. } => serve(&config, http).await,
-        Command::Demo {
-            command: DemoCommand::Record { stdio, config, .. },
-        } => serve(&config, !stdio).await,
         Command::Admin { command } => admin(command).await,
-        Command::Verify {
-            cbor,
-            expect_output,
-            expect_network,
-            expect_signer,
-        } => verify_cbor(cbor, &expect_output, &expect_network, expect_signer),
     }
-}
-
-/// `fluent verify`: prints the verification, or the error as
-/// `{"error": {code, message, details}}`, as JSON; exits 0 only on a match.
-fn verify_cbor(
-    cbor: String,
-    outputs: &[String],
-    network: &str,
-    signers: Vec<String>,
-) -> anyhow::Result<ExitCode> {
-    let cbor = if cbor == "-" {
-        std::io::read_to_string(std::io::stdin()).context("reading the CBOR from stdin")?
-    } else {
-        cbor
-    };
-    let result = expectations(outputs, network, signers)
-        .and_then(|expected| verify::verify(&cbor, &expected));
-    let (printed, code) = match result {
-        Ok(verification) => {
-            eprintln!("verdict: {}", verification.verdict.as_str());
-            let code = match verification.verdict {
-                Verdict::Match => ExitCode::SUCCESS,
-                Verdict::Mismatch => ExitCode::FAILURE,
-            };
-            (serde_json::to_value(verification)?, code)
-        }
-        Err(err) => (error_json(&err), ExitCode::FAILURE),
-    };
-    println!("{}", serde_json::to_string_pretty(&printed)?);
-    Ok(code)
-}
-
-fn expectations(
-    outputs: &[String],
-    network: &str,
-    signers: Vec<String>,
-) -> Result<Expectations, FluentError> {
-    let outputs = outputs
-        .iter()
-        .map(|output| output.parse::<OutputExpectation>())
-        .collect::<Result<_, _>>()?;
-    let network = network
-        .parse::<Network>()
-        .map_err(|reason| FluentError::InvalidArguments {
-            reason: format!("{reason}; expected mainnet, preprod or preview"),
-            arguments: vec!["expect-network".to_string()],
-            violations: Vec::new(),
-        })?;
-    Ok(Expectations {
-        outputs,
-        network,
-        signers,
-    })
 }
 
 /// `fluent admin`: opens the configured store and revokes or prints a user.

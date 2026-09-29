@@ -11,6 +11,9 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# `xtask` is a workspace member, so cargo needs its sources to load the
+# workspace; only `fluent-server` is built, and nothing of `xtask` ships.
+COPY xtask ./xtask
 
 # Cache mounts keep downloaded crates between local builds. The target
 # directory is not cached: cargo would reuse a binary linked against another

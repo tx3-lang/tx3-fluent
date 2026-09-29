@@ -1,0 +1,14 @@
+target/
+.git/
+.github/
+docs/
+scripts/
+tests/
+*.md
+!crates/**/*.md
+rust-toolchain.toml
+docker-compose.yml
+Dockerfile
+registrations/
+*.sqlite*
+.env

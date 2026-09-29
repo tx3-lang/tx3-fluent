@@ -27,7 +27,7 @@ reconnect.
 | Path | Content | Persistence |
 | --- | --- | --- |
 | `/data/fluent.toml` | `hosted.toml`, for example from a config map mounted read-only. | Configuration. |
-| `/data/registrations` | One registration bundle per subdirectory, plus `.cache/` with verified registry artifacts. | Persistent, or rebuilt from the bundle source on start. |
+| `/data/registrations` | One registration bundle per subdirectory, plus `.cache/` with verified registry artifacts. | Persistent, or rebuilt on start from the reviewed bundles in [`deploy/hosted/registrations`](../deploy/hosted/registrations). |
 | `/data/fluent.sqlite` | Users, their selections and daily quota counts, with its `-wal` and `-shm` files. | **Persistent.** Back it up; losing it resets every user's selections. |
 
 Mount one persistent volume at `/data`, writable by uid 1000 (on Kubernetes,

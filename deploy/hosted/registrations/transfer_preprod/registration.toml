@@ -1,0 +1,24 @@
+# open-tx3/transfer 0.1.0 on preprod, pinned to the published artifact bound by
+# the founder on 2026-09-27: https://tx3.land/protocol/open-tx3/transfer
+slug = "transfer_preprod"
+
+[protocol]
+scope = "open-tx3"
+name = "transfer"
+version = "0.1.0"
+source = "registry"
+
+[protocol.registry]
+url = "https://oci.tx3.land"
+ref = "open-tx3/transfer:0.1.0"
+manifest_digest = "sha256:b7b32dfa0fb9eda772700f8ba01a4d76084b2ea2e5883cf721db2505c6b35e77"
+
+[artifact]
+tii_digest = "sha256:fcc527ea7165969f472870772b64cdbe9b4ad59ad27231790bc484de79983014"
+
+[skill]
+path = "SKILL.md"
+
+[deployment]
+profile = "preprod"
+network = "preprod"

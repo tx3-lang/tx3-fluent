@@ -27,7 +27,10 @@ The site is added later.
 | `crates/fluent-server` | The `fluent` binary: CLI, the MCP server over stdio and HTTP, and the hosted selection store (migrations in `migrations/`); later the site. |
 | `examples/config` | Example configurations, loaded by the tests. |
 | `docs/operations.md` | Operating a server: metrics, setting limits from them, and what is logged. |
+| `docs/skill-template.md` | The structure every consumption skill (`SKILL.md`) follows. |
+| `deploy/hosted/registrations` | The reviewed registration bundles served by the hosted deployment, each pinned to a published registry artifact. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
+| `crates/fluent-core/tests/fixtures/registry` | Published registry artifacts (manifest and TII, byte for byte) that the hosted-bundle tests serve offline. |
 | `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
 | `crates/fluent-core/tests/golden` | Reviewed tool descriptor lists the catalog tests compare against. |
 | `crates/fluent-core/tests/fixtures/tx` | Real preprod transactions (CBOR hex) with their expected summaries, checked against the chain explorer. |
@@ -492,6 +495,11 @@ dependencies:                             # optional
     required_for: [stake]                 # transactions of the TII
 ---
 ```
+
+The body's structure, and what each section tells the assistant, is set by
+the [skill template](docs/skill-template.md); the hosted bundles in
+[`deploy/hosted/registrations`](deploy/hosted/registrations) are tested
+against it.
 
 ### Rules
 

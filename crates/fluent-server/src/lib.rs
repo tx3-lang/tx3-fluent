@@ -4,6 +4,9 @@
 //!   loaded catalog, independent of the transport that carries it.
 //! - [`http`] — the Streamable HTTP transport and its caller
 //!   [authentication](http::auth).
+//! - [`store`] — the hosted store of users and their selections, and the
+//!   per-user tool scopes it backs.
 
 pub mod http;
 pub mod mcp;
+pub mod store;

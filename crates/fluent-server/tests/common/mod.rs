@@ -90,7 +90,7 @@ pub fn claims(sub: &str) -> Value {
     })
 }
 
-fn fixtures() -> PathBuf {
+pub fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fluent-core/tests/fixtures")
 }
 
@@ -142,7 +142,12 @@ pub struct Running {
 
 impl Running {
     pub async fn start(config: &Config) -> Running {
-        let server = bind(config).await.expect("bind");
+        Running::start_with(config, handler(config).await).await
+    }
+
+    /// Starts `config` serving `handler`.
+    pub async fn start_with(config: &Config, handler: FluentHandler) -> Running {
+        let server = HttpServer::bind(config, handler).await.expect("bind");
         let addr: SocketAddr = server.local_addr().expect("local address");
         let (stop, stopped) = oneshot::channel::<()>();
         tokio::spawn(server.run(async {
@@ -234,6 +239,15 @@ pub fn initialize() -> Value {
 
 pub fn list_tools() -> Value {
     json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+}
+
+pub fn call_tool(name: &str, arguments: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments}
+    })
 }
 
 /// The JSON-RPC reply in a response body, sent as JSON or as an SSE event.

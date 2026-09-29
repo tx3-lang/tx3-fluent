@@ -11,15 +11,17 @@ contracts shared by every later component (the configuration model, the error
 type and the result envelope), offline address inspection, the registration
 bundle loader with its registry artifact fetch, the tool catalog and the
 transaction preparation engine, and the MCP server over stdio and over
-Streamable HTTP with bearer-token or OAuth 2.1 (OIDC) authentication. Per-user
-tool scopes, quotas, storage and the site are added later.
+Streamable HTTP with bearer-token or OAuth 2.1 (OIDC) authentication, and the
+hosted SQLite store of users and their registration selections that scopes each
+OIDC user's tools (`fluent admin` revokes a user or prints their selections).
+Quotas and the site are added later.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
 | `crates/fluent-core` | Library: configuration, errors, result envelopes, address inspection, registration bundles, tool catalog, preparation engine and transaction summaries. |
-| `crates/fluent-server` | The `fluent` binary: CLI and the MCP server over stdio and HTTP; later store and site. |
+| `crates/fluent-server` | The `fluent` binary: CLI, the MCP server over stdio and HTTP, and the hosted selection store (migrations in `migrations/`); later the site. |
 | `examples/config` | Example configurations, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
@@ -28,7 +30,7 @@ tool scopes, quotas, storage and the site are added later.
 
 ## Build and test
 
-The toolchain is pinned in `rust-toolchain.toml` (Rust 1.91 with `rustfmt` and
+The toolchain is pinned in `rust-toolchain.toml` (Rust 1.94 with `rustfmt` and
 `clippy`); `rustup` installs it on first use.
 
 ```sh

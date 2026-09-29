@@ -6,10 +6,12 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{ArgGroup, Parser, Subcommand};
+use fluent_core::config::AuthConfig;
 use fluent_core::registration::{self, Loaded};
 use fluent_core::{Config, Engine, FluentError, PrepareRequest};
 use fluent_server::http::{HttpServer, shutdown_signal};
-use fluent_server::mcp::{AllRegistrations, FluentHandler, error_json};
+use fluent_server::mcp::{AllRegistrations, FluentHandler, Scoping, error_json};
+use fluent_server::store::{Store, UserScopes};
 use rmcp::ServiceExt;
 use serde::Serialize;
 use serde_json::Value;
@@ -58,8 +60,10 @@ enum Command {
         #[arg(long, value_name = "JSON")]
         args: String,
     },
-    /// Serve every loaded registration's tools over MCP. Logs go to stderr
-    /// as JSON lines.
+    /// Serve the loaded registrations' tools over MCP. Logs go to stderr as
+    /// JSON lines. Over HTTP with `oidc` authentication and a `[store]`, each
+    /// user sees the registrations they selected; otherwise every session sees
+    /// every registration.
     #[command(group(ArgGroup::new("transport").required(true).args(["stdio", "http"])))]
     Serve {
         /// Speak MCP over stdin and stdout.
@@ -72,6 +76,35 @@ enum Command {
         /// Configuration file to load; `FLUENT_*` environment overrides apply.
         #[arg(long, value_name = "FILE")]
         config: PathBuf,
+    },
+    /// Operate on the users in the `[store]` database.
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AdminCommand {
+    /// Revoke a user: they see no tools and every call fails as
+    /// `unauthorized`, including in sessions already open. Prints the user
+    /// as JSON.
+    Revoke {
+        /// Configuration file to load; `FLUENT_*` environment overrides apply.
+        #[arg(long, value_name = "FILE")]
+        config: PathBuf,
+        /// The user's OIDC subject.
+        #[arg(long, value_name = "SUB")]
+        sub: String,
+    },
+    /// Print a user and the registrations they selected as JSON.
+    Selections {
+        /// Configuration file to load; `FLUENT_*` environment overrides apply.
+        #[arg(long, value_name = "FILE")]
+        config: PathBuf,
+        /// The user's OIDC subject.
+        #[arg(long, value_name = "SUB")]
+        sub: String,
     },
 }
 
@@ -174,7 +207,33 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             args,
         } => prepare(&config, registration, tx, &args).await,
         Command::Serve { http, config, .. } => serve(&config, http).await,
+        Command::Admin { command } => admin(command).await,
     }
+}
+
+/// `fluent admin`: opens the configured store and revokes or prints a user.
+async fn admin(command: AdminCommand) -> anyhow::Result<ExitCode> {
+    let (AdminCommand::Revoke { config, sub } | AdminCommand::Selections { config, sub }) =
+        &command;
+    let store = open_store(config).await?;
+    let printed = match command {
+        AdminCommand::Revoke { .. } => serde_json::to_value(store.revoke(sub).await?)?,
+        AdminCommand::Selections { .. } => serde_json::json!({
+            "user": store.user(sub).await?,
+            "selections": store.list_selections(sub).await?,
+        }),
+    };
+    println!("{}", serde_json::to_string_pretty(&printed)?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Opens the `[store]` database `config` names.
+async fn open_store(config: &Path) -> anyhow::Result<Store> {
+    let loaded = Config::load(config).with_context(|| format!("loading {}", config.display()))?;
+    let Some(store) = &loaded.store else {
+        anyhow::bail!("{} has no [store] table", config.display());
+    };
+    Store::open(&store.sqlite_path).await
 }
 
 /// `fluent serve`: loads the configuration and registrations, then serves
@@ -193,10 +252,23 @@ async fn serve(config: &Path, http: bool) -> anyhow::Result<ExitCode> {
     }
     let catalog = Arc::new(registrations.catalog);
     let engine = Arc::new(Engine::new(&loaded, &catalog));
-    let scope = Arc::new(AllRegistrations::new(&catalog));
-    let handler = FluentHandler::new(Arc::clone(&catalog), engine, scope)
+    let scoping: Arc<dyn Scoping> = match (&loaded.store, &loaded.auth) {
+        (Some(store), AuthConfig::Oidc { .. }) if http => {
+            let path = &store.sqlite_path;
+            tracing::info!(
+                store = %path.display(),
+                "each user sees the registrations they selected"
+            );
+            Arc::new(UserScopes::new(
+                Store::open(path).await?,
+                Arc::clone(&catalog),
+            ))
+        }
+        _ => Arc::new(AllRegistrations::new(&catalog)),
+    };
+    let handler = FluentHandler::new(Arc::clone(&catalog), engine, scoping)
         .context("building the tool catalog")?;
-    let tools = handler.visible_tools().len();
+    let tools = handler.tools().len();
 
     if http {
         let server = HttpServer::bind(&loaded, handler).await?;

@@ -4,7 +4,8 @@
 //! [`FluentHandler`] implements [`ServerHandler`] by hand, because its tools
 //! come from the registrations loaded at startup rather than from code.
 //! `tools/list` returns the [`ToolDescriptor`]s the session's [`ToolScope`]
-//! can see; `tools/call` dispatches by name:
+//! can see, which [`Scoping`] chooses when the session initializes;
+//! `tools/call` dispatches by name:
 //!
 //! - a transaction tool → [`Engine::prepare`];
 //! - `fluent_get_skill` → the registration's skill, as a [`SkillResult`];
@@ -13,7 +14,12 @@
 //! A result carries the JSON value both as `structuredContent` and as one
 //! text content. A [`FluentError`] is a tool result with `isError: true` and
 //! the text `{"error": {code, message, details}}`, never a JSON-RPC error; only
-//! a tool name the session cannot see is a protocol error.
+//! a tool name no registration defines is a protocol error. A transaction tool
+//! outside the session's scope fails as `registration_unavailable`, and every
+//! call of a session whose scope refuses it fails as `unauthorized`.
+//!
+//! When [`Scoping::changes`] announces the session's subject, the session is
+//! sent `notifications/tools/list_changed`.
 //!
 //! Over HTTP, every session gets its own handler from
 //! [`FluentHandler::for_session`]. It records the [`Principal`] that
@@ -26,15 +32,19 @@ use fluent_core::catalog::{
     self, GET_SKILL_TOOL, INSPECT_ADDRESS_TOOL, SkillProtocol, SkillResult, ToolDescriptor,
 };
 use fluent_core::{Catalog, Engine, FluentError, PrepareRequest, Registration, address};
+use futures_util::FutureExt;
+use futures_util::future::BoxFuture;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
     ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Map, Value, json};
-use tracing::info;
+use tokio::sync::broadcast;
+use tokio_util::sync::{CancellationToken, DropGuard};
+use tracing::{info, warn};
 
 use crate::http::auth::Principal;
 
@@ -55,14 +65,34 @@ pub const INSTRUCTIONS: &str = "Tx3 Fluent prepares UNSIGNED Cardano transaction
 /// other registration are neither listed nor callable, and
 /// `fluent_get_skill` does not find their skills.
 pub trait ToolScope: Send + Sync + 'static {
-    /// The slugs of the visible registrations.
-    fn visible_slugs(&self) -> Vec<String>;
+    /// The slugs of the visible registrations, asked on every request; fails
+    /// as [`FluentError::Unauthorized`] when the session may see and call
+    /// nothing.
+    fn visible_slugs(&self) -> BoxFuture<'_, Result<Vec<String>, FluentError>>;
 }
 
-/// Every loaded registration: the scope of a self-hosted server.
+/// Chooses each session's [`ToolScope`] from the principal that initialized
+/// it.
+pub trait Scoping: Send + Sync + 'static {
+    /// The scope of a session `principal` initialized; `None` over stdio and
+    /// without authentication. Failing fails the `initialize` request.
+    fn scope_for<'a>(
+        &'a self,
+        principal: Option<&'a Principal>,
+    ) -> BoxFuture<'a, Result<Arc<dyn ToolScope>, FluentError>>;
+
+    /// Announces the subjects whose scope changed; `None` when scopes never
+    /// change.
+    fn changes(&self) -> Option<broadcast::Receiver<String>> {
+        None
+    }
+}
+
+/// Every loaded registration, for every session: the scope of a self-hosted
+/// server.
 #[derive(Debug, Clone)]
 pub struct AllRegistrations {
-    slugs: Vec<String>,
+    slugs: Arc<[String]>,
 }
 
 impl AllRegistrations {
@@ -75,8 +105,18 @@ impl AllRegistrations {
 }
 
 impl ToolScope for AllRegistrations {
-    fn visible_slugs(&self) -> Vec<String> {
-        self.slugs.clone()
+    fn visible_slugs(&self) -> BoxFuture<'_, Result<Vec<String>, FluentError>> {
+        std::future::ready(Ok(self.slugs.to_vec())).boxed()
+    }
+}
+
+impl Scoping for AllRegistrations {
+    fn scope_for<'a>(
+        &'a self,
+        _principal: Option<&'a Principal>,
+    ) -> BoxFuture<'a, Result<Arc<dyn ToolScope>, FluentError>> {
+        let scope: Arc<dyn ToolScope> = Arc::new(self.clone());
+        std::future::ready(Ok(scope)).boxed()
     }
 }
 
@@ -84,10 +124,14 @@ impl ToolScope for AllRegistrations {
 pub struct FluentHandler {
     catalog: Arc<Catalog>,
     engine: Arc<Engine>,
-    scope: Arc<dyn ToolScope>,
+    scoping: Arc<dyn Scoping>,
     tools: Arc<[ToolDescriptor]>,
     /// Who initialized this session; `None` inside when nobody authenticated.
     principal: OnceLock<Option<Principal>>,
+    /// What this session sees, chosen at `initialize`.
+    scope: OnceLock<Arc<dyn ToolScope>>,
+    /// Stops the session's change watcher when the session's handler drops.
+    watcher: OnceLock<DropGuard>,
 }
 
 impl FluentHandler {
@@ -98,27 +142,31 @@ impl FluentHandler {
     pub fn new(
         catalog: Arc<Catalog>,
         engine: Arc<Engine>,
-        scope: Arc<dyn ToolScope>,
+        scoping: Arc<dyn Scoping>,
     ) -> Result<FluentHandler, FluentError> {
         let tools = catalog::all_tools(&catalog)?.into();
         Ok(FluentHandler {
             catalog,
             engine,
-            scope,
+            scoping,
             tools,
             principal: OnceLock::new(),
+            scope: OnceLock::new(),
+            watcher: OnceLock::new(),
         })
     }
 
-    /// A handler for a new session: the same catalog, engine, scope and
-    /// tools, and no principal yet.
+    /// A handler for a new session: the same catalog, engine, scoping and
+    /// tools, and no principal or scope yet.
     pub fn for_session(&self) -> FluentHandler {
         FluentHandler {
             catalog: Arc::clone(&self.catalog),
             engine: Arc::clone(&self.engine),
-            scope: Arc::clone(&self.scope),
+            scoping: Arc::clone(&self.scoping),
             tools: Arc::clone(&self.tools),
             principal: OnceLock::new(),
+            scope: OnceLock::new(),
+            watcher: OnceLock::new(),
         }
     }
 
@@ -143,26 +191,61 @@ impl FluentHandler {
         }
     }
 
+    /// Every tool of the catalog, whoever can see it.
+    pub fn tools(&self) -> &[ToolDescriptor] {
+        &self.tools
+    }
+
+    /// The slugs this session's scope shows; nothing before `initialize`.
+    async fn visible_slugs(&self) -> Result<Vec<String>, FluentError> {
+        match self.scope.get() {
+            Some(scope) => scope.visible_slugs().await,
+            None => Err(FluentError::Unauthorized),
+        }
+    }
+
     /// The tools this session can see: the fixed tools, then the transaction
-    /// tools of the visible registrations.
-    pub fn visible_tools(&self) -> Vec<&ToolDescriptor> {
-        let visible = self.scope.visible_slugs();
-        self.tools
+    /// tools of the visible registrations. Nothing when the scope refuses the
+    /// session.
+    pub async fn visible_tools(&self) -> Result<Vec<&ToolDescriptor>, FluentError> {
+        let visible = match self.visible_slugs().await {
+            Ok(visible) => visible,
+            Err(FluentError::Unauthorized) => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        };
+        Ok(self
+            .tools
             .iter()
             .filter(|tool| match &tool.registration_slug {
                 None => true,
                 Some(slug) => visible.contains(slug),
             })
-            .collect()
+            .collect())
     }
 
-    /// Calls the visible tool `name`; `None` when there is none.
+    /// Calls tool `name`; `None` when no registration defines it. A tool
+    /// outside the session's scope fails as
+    /// [`FluentError::RegistrationUnavailable`].
     pub async fn call(
         &self,
         name: &str,
         args: Map<String, Value>,
     ) -> Option<Result<Value, FluentError>> {
-        let tool = self.visible_tools().into_iter().find(|t| t.name == name)?;
+        let tool = self.tools.iter().find(|t| t.name == name)?;
+        let visible = match self.visible_slugs().await {
+            Ok(visible) => visible,
+            Err(err) => return Some(Err(err)),
+        };
+        if let Some(slug) = &tool.registration_slug
+            && !visible.contains(slug)
+        {
+            return Some(Err(FluentError::RegistrationUnavailable {
+                registration: slug.clone(),
+                reason: "it is not selected for this account, or changed since it was \
+                         selected; select it again"
+                    .to_string(),
+            }));
+        }
         let result = match (&tool.registration_slug, &tool.tx_name) {
             (Some(slug), Some(tx)) => self
                 .engine
@@ -173,9 +256,8 @@ impl FluentHandler {
                 })
                 .await
                 .and_then(to_json),
-            _ if name == GET_SKILL_TOOL => {
-                only_string_arg(&args, "protocol").and_then(|p| self.skill(p).and_then(to_json))
-            }
+            _ if name == GET_SKILL_TOOL => only_string_arg(&args, "protocol")
+                .and_then(|p| self.skill(p, &visible).and_then(to_json)),
             _ if name == INSPECT_ADDRESS_TOOL => only_string_arg(&args, "address")
                 .and_then(|a| address::inspect(a).and_then(to_json)),
             _ => Err(FluentError::internal(format!(
@@ -187,8 +269,7 @@ impl FluentHandler {
 
     /// The skill of the visible registration `protocol` names: a slug, or a
     /// `scope/name` that exactly one visible registration serves.
-    fn skill(&self, protocol: &str) -> Result<SkillResult, FluentError> {
-        let visible = self.scope.visible_slugs();
+    fn skill(&self, protocol: &str, visible: &[String]) -> Result<SkillResult, FluentError> {
         let registrations: Vec<&Arc<Registration>> = self
             .catalog
             .iter()
@@ -247,6 +328,25 @@ impl ServerHandler for FluentHandler {
         if self.principal.set(principal).is_err() {
             self.check_principal(&context)?;
         }
+        if self.scope.get().is_none() {
+            let scope = self
+                .scoping
+                .scope_for(self.principal())
+                .await
+                .map_err(|err| {
+                    warn!(code = %err.code(), "choosing the session's scope failed: {err}");
+                    ErrorData::internal_error("the session's tools are unavailable", None)
+                })?;
+            if self.scope.set(scope).is_ok()
+                && let (Some(changes), Some(principal)) = (self.scoping.changes(), self.principal())
+            {
+                let _ = self.watcher.set(watch_changes(
+                    changes,
+                    principal.sub.clone(),
+                    context.peer.clone(),
+                ));
+            }
+        }
         context.peer.set_peer_info(request.clone());
         self.negotiate_initialize(&request)
     }
@@ -257,16 +357,19 @@ impl ServerHandler for FluentHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         self.check_principal(&context)?;
+        let tools = self.visible_tools().await.map_err(|err| {
+            warn!(code = %err.code(), "listing the session's tools failed: {err}");
+            ErrorData::internal_error("the session's tools are unavailable", None)
+        })?;
         Ok(ListToolsResult::with_all_items(
-            self.visible_tools().into_iter().map(to_tool).collect(),
+            tools.into_iter().map(to_tool).collect(),
         ))
     }
 
+    /// Any tool of the catalog: the transport reads input schemas through a
+    /// handler that serves no session.
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.visible_tools()
-            .into_iter()
-            .find(|t| t.name == name)
-            .map(to_tool)
+        self.tools.iter().find(|t| t.name == name).map(to_tool)
     }
 
     async fn call_tool(
@@ -296,6 +399,34 @@ impl ServerHandler for FluentHandler {
         };
         Ok(result.into())
     }
+}
+
+/// Sends `peer` `notifications/tools/list_changed` whenever `changes`
+/// announces `sub`, until the returned guard drops.
+fn watch_changes(
+    mut changes: broadcast::Receiver<String>,
+    sub: String,
+    peer: Peer<RoleServer>,
+) -> DropGuard {
+    let stop = CancellationToken::new();
+    let stopped = stop.clone();
+    tokio::spawn(async move {
+        loop {
+            let changed = tokio::select! {
+                () = stopped.cancelled() => return,
+                changed = changes.recv() => changed,
+            };
+            match changed {
+                Ok(changed) if changed != sub => continue,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+            if peer.notify_tool_list_changed().await.is_err() {
+                info!("tools/list_changed not delivered");
+            }
+        }
+    });
+    stop.drop_guard()
 }
 
 /// The principal authentication attached to the HTTP request behind

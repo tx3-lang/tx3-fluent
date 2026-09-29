@@ -609,3 +609,77 @@ fn serve_http_stops_gracefully_on_sigterm() {
     assert!(logs.contains("SIGTERM received"), "{logs}");
     assert!(!logs.contains("\"t\""), "{logs}");
 }
+
+#[test]
+fn admin_revokes_and_prints_a_user() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = dir.path().join("fluent.sqlite");
+    let config = admin_config(
+        dir.path(),
+        &format!("[store]\nsqlite_path = {}\n", toml_string(&store)),
+    );
+    let config = config.to_str().unwrap();
+
+    let output = fluent(
+        &["admin", "selections", "--config", config, "--sub", "alice"],
+        &[],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("JSON");
+    assert_eq!(printed, serde_json::json!({"user": null, "selections": []}));
+
+    let output = fluent(
+        &["admin", "revoke", "--config", config, "--sub", "alice"],
+        &[],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let revoked: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("JSON");
+    assert_eq!(revoked["sub"], "alice");
+    assert!(revoked["revoked_at"].is_i64(), "{revoked}");
+
+    let output = fluent(
+        &["admin", "selections", "--config", config, "--sub", "alice"],
+        &[],
+    );
+    let printed: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("JSON");
+    assert_eq!(printed["user"]["revoked_at"], revoked["revoked_at"]);
+}
+
+#[test]
+fn admin_requires_a_store() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = admin_config(dir.path(), "");
+    let output = fluent(
+        &[
+            "admin",
+            "revoke",
+            "--config",
+            config.to_str().unwrap(),
+            "--sub",
+            "alice",
+        ],
+        &[],
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("[store]"), "{}", stderr(&output));
+}
+
+/// A minimal configuration in `dir`, with `extra` appended.
+fn admin_config(dir: &Path, extra: &str) -> PathBuf {
+    let config = dir.join("fluent.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[registrations]\ndir = {}\n\n\
+             [networks.preprod]\ntrp_url = \"http://127.0.0.1:9\"\n\n\
+             [auth]\nmode = \"none\"\n\n{extra}",
+            toml_string(dir)
+        ),
+    )
+    .expect("write config");
+    config
+}
+
+fn toml_string(path: &Path) -> String {
+    toml::Value::String(path.display().to_string()).to_string()
+}

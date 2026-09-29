@@ -11,6 +11,17 @@ repository = "https://github.com/tx3-lang/tx3-fluent"
 homepage = "https://github.com/tx3-lang/tx3-fluent"
 publish = false
 
+# `cargo release <level>` bumps both crates together, makes one commit and
+# tags it `v{{version}}` (on fluent-server only, so the tag is made once).
+# Nothing is pushed or published: pushing the tag triggers the image build.
+[workspace.metadata.release]
+shared-version = true
+consolidate-commits = true
+pre-release-commit-message = "release: v{{version}}"
+tag = false
+push = false
+publish = false
+
 # Every dependency the workspace uses is pinned here; member crates inherit with
 # `workspace = true` so versions are declared in one place.
 [workspace.dependencies]

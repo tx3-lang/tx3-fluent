@@ -54,6 +54,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --all-targets --all-features
 
+  # Builds the image and checks that it serves the fixture registrations over
+  # HTTP (tests/container_smoke.sh).
+  container-smoke:
+    name: container smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: tests/container_smoke.sh
+
   # Prepares a transfer against the live preprod resolver
   # (crates/fluent-core/tests/live_preprod.rs). Without the API key secret, as
   # on pull requests from forks, the URL stays empty and the test skips green.

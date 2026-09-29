@@ -1,0 +1,33 @@
+# Self-hosted Tx3 Fluent over HTTP, from the published image. See
+# docs/self-hosting.md. Put `fluent.toml` next to this file and the
+# registration bundles in `./registrations`, then:
+#
+#   export FLUENT_API_TOKEN=$(openssl rand -hex 32)
+#   docker compose up -d
+#
+# Registrations load at startup: after changing a bundle, run
+# `docker compose restart fluent`.
+services:
+  fluent:
+    image: ghcr.io/tx3-lang/tx3-fluent:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      # The container must listen on every interface for the port to reach it,
+      # and the bundles are where the bind mount below puts them.
+      FLUENT_SERVER__LISTEN: "0.0.0.0:8080"
+      FLUENT_REGISTRATIONS__DIR: /data/registrations
+      # Values of the variables fluent.toml names in its `*_env` keys.
+      FLUENT_API_TOKEN: ${FLUENT_API_TOKEN:?set FLUENT_API_TOKEN}
+      TRP_PREPROD_API_KEY: ${TRP_PREPROD_API_KEY:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      # The volume keeps anything written under /data, such as a SQLite store
+      # at `sqlite_path = "/data/fluent.sqlite"`, across restarts and upgrades.
+      - fluent-data:/data
+      - ./fluent.toml:/data/fluent.toml:ro
+      - ./registrations:/data/registrations
+
+volumes:
+  fluent-data:

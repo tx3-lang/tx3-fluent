@@ -29,6 +29,11 @@ Prometheus metrics at `/metrics`; see [the operations guide](docs/operations.md)
 | `docs/operations.md` | Operating a server: metrics, setting limits from them, and what is logged. |
 | `docs/skill-template.md` | The structure every consumption skill (`SKILL.md`) follows. |
 | `deploy/hosted/registrations` | The reviewed registration bundles served by the hosted deployment, each pinned to a published registry artifact. |
+| `docs/self-hosting.md` | Running your own server: the container, bundle authoring, networks, authentication, reloading and upgrading. |
+| `docs/stdio.md` | Registering `fluent serve --stdio` with Claude Desktop, MCP Inspector and other clients. |
+| `docs/hosted-deployment.md` | What the public deployment needs: image, volume, secrets, network, health and metrics. |
+| `Dockerfile`, `docker-compose.yml` | The container image, published as `ghcr.io/tx3-lang/tx3-fluent`, and a self-hosting Compose example. |
+| `tests/container_smoke.sh` | Builds the image and checks it serves the fixture registrations over HTTP. |
 | `docs/site` | Screenshots of the companion site. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/registry` | Published registry artifacts (manifest and TII, byte for byte) that the hosted-bundle tests serve offline. |
@@ -48,8 +53,28 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
-CI runs the last three on every pull request and push to `main`; each job
-blocks.
+CI runs the last three on every pull request and push to `main`, together
+with `tests/container_smoke.sh` (needs Docker, `curl` and `jq`), which builds
+the image, serves the fixture registrations in `token` mode and checks
+`initialize` and `tools/list`; each job blocks.
+
+## Container image and releases
+
+```sh
+docker build -t tx3-fluent .
+docker run -p 127.0.0.1:8080:8080 -e FLUENT_API_TOKEN=… -v "$PWD/data:/data" tx3-fluent
+```
+
+The image serves `fluent serve --http --config /data/fluent.toml`; see
+[the self-hosting guide](docs/self-hosting.md). The `Docker` workflow
+publishes it to `ghcr.io/tx3-lang/tx3-fluent` for `linux/amd64` and
+`linux/arm64`: `latest` on every push to `main`, `vX.Y.Z` and `vX.Y` on a
+`v*` tag, and `sha-<commit>` always.
+
+Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release):
+`cargo release <patch|minor|major> --execute` bumps both crates, commits
+`release: vX.Y.Z` and tags it. Nothing is published to crates.io, and
+nothing is pushed; pushing the tag publishes the image.
 
 `crates/fluent-core/tests/live_preprod.rs` prepares a transfer against a live
 preprod resolver. It skips green unless `FLUENT_TRP_URL_PREPROD` is set; then

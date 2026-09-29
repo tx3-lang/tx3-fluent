@@ -34,6 +34,13 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
 # Constant-time comparison of static bearer tokens.
 subtle = "2"
+# The site: server-rendered pages, signed session cookies and sign-in with the
+# OIDC issuer (authorization code + PKCE). oauth2 reuses the reqwest client.
+askama = "0.16"
+axum-extra = { version = "0.12", features = ["cookie-signed", "cookie-key-expansion"] }
+oauth2 = { version = "5", default-features = false, features = ["reqwest"] }
+# Cookie lifetimes, in the cookie crate's duration type.
+time = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs", "sync"] }
 # The hosted store: users and their registration selections. `macros` only for
 # `migrate!`, which embeds the migrations; queries are checked at run time.

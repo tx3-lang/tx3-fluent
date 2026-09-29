@@ -6,7 +6,10 @@
 //!   [authentication](http::auth).
 //! - [`store`] — the hosted store of users and their selections, and the
 //!   per-user tool scopes it backs.
+//! - [`site`] — the companion site where users sign in and choose their
+//!   registrations.
 
 pub mod http;
 pub mod mcp;
+pub mod site;
 pub mod store;

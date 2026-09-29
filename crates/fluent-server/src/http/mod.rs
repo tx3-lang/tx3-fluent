@@ -7,6 +7,8 @@
 //! | `GET /healthz` | no | `{"status": "ok", "version": …}` |
 //! | `GET /.well-known/oauth-protected-resource` | no | RFC 9728 metadata, `oidc` mode only |
 //!
+//! With a [`Site`], its routes are served too.
+//!
 //! Sessions live in memory. A request body may be at most
 //! [`MAX_BODY_BYTES`]. The `Host` header must name a loopback address, the
 //! listen address or the public URL's host.
@@ -31,6 +33,7 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp::FluentHandler;
+use crate::site::Site;
 use auth::{Authenticator, METADATA_PATH};
 
 /// The largest request body accepted, in bytes.
@@ -50,6 +53,16 @@ impl HttpServer {
     /// is not loopback, or when the authenticator cannot be built (see
     /// [`Authenticator::new`]).
     pub async fn bind(config: &Config, handler: FluentHandler) -> anyhow::Result<HttpServer> {
+        HttpServer::bind_with_site(config, handler, None).await
+    }
+
+    /// Binds as [`HttpServer::bind`] does and also serves `site`'s routes
+    /// when there is one.
+    pub async fn bind_with_site(
+        config: &Config,
+        handler: FluentHandler,
+        site: Option<Site>,
+    ) -> anyhow::Result<HttpServer> {
         let listen = config.server.listen;
         let public_url = config.server.public_url.as_deref();
         let auth = Authenticator::new(&config.auth, public_url)?;
@@ -67,6 +80,10 @@ impl HttpServer {
             allowed_hosts(listen, public_url),
             cancel.clone(),
         );
+        let router = match site {
+            Some(site) => router.merge(site.router()),
+            None => router,
+        };
         let listener = TcpListener::bind(listen)
             .await
             .with_context(|| format!("binding {listen}"))?;
@@ -121,7 +138,9 @@ pub fn router(
 
     let protected = Router::new()
         .route_service("/mcp", mcp)
-        .layer(middleware::from_fn_with_state(
+        // Only `/mcp`: an unknown path is `404`, not an authentication
+        // challenge.
+        .route_layer(middleware::from_fn_with_state(
             Arc::clone(&auth),
             auth::require_auth,
         ));

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Connect ChatGPT · Tx3 Fluent{% endblock %}
+{% block content %}
+<h1>Connect ChatGPT</h1>
+<p>MCP server URL:</p>
+<p class="server-url"><code>{{ mcp_url }}</code></p>
+<ol class="steps">
+  <li>In ChatGPT, turn on developer mode (Settings → Apps &amp; Connectors → Advanced settings).</li>
+  <li>Create a connector and give it the MCP server URL above, <code>{{ mcp_url }}</code>, with OAuth authentication.</li>
+  <li>ChatGPT sends you through the Tx3 sign-in. Complete it with the account you use here.</li>
+  <li>{{ refresh_sentence }}.</li>
+</ol>
+<p class="callout">{{ never_signs_sentence }}. Every tool returns an unsigned
+transaction and a summary; you review and sign it in your own wallet.</p>
+<h2>Your protocols</h2>
+{% if enabled.is_empty() %}
+<p class="empty">You have not turned on any protocol yet. <a href="/protocols">Choose protocols</a>.</p>
+{% else %}
+<ul class="enabled">
+  {% for row in enabled %}
+  <li><span class="protocol">{{ row.protocol }}</span> {{ row.version }}
+    on <span class="network network-{{ row.network }}">{{ row.network }}</span></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

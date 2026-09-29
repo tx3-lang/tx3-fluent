@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>{{ brand_line }}</h1>
+  <p class="lede">Choose the Tx3 protocols your assistant may use. It prepares
+  unsigned transactions for them; you review and sign in your own wallet.</p>
+  {% if user.is_some() %}
+  <p class="actions">
+    <a class="button" href="/protocols">Choose protocols</a>
+    <a class="button secondary" href="/connect">Connect ChatGPT</a>
+  </p>
+  {% else %}
+  <p class="actions"><a class="button" href="/auth/login">Sign in</a></p>
+  {% endif %}
+</section>
+{% endblock %}

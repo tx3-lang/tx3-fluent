@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Protocols · Tx3 Fluent{% endblock %}
+{% block content %}
+<h1>Protocols</h1>
+<p>Turn on the protocols your assistant may use. Each one serves a single
+network; its tools prepare transactions on that network only.</p>
+{% if rows.is_empty() %}
+<p class="empty">No protocols are offered yet.</p>
+{% else %}
+<div class="table-wrap">
+<table class="protocols">
+  <thead>
+    <tr>
+      <th scope="col">Protocol</th>
+      <th scope="col">Version</th>
+      <th scope="col">Network</th>
+      <th scope="col">Profile</th>
+      <th scope="col">Revision</th>
+      <th scope="col">Status</th>
+      <th scope="col"><span class="visually-hidden">Change</span></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td><span class="protocol">{{ row.protocol }}</span></td>
+      <td>{{ row.version }}</td>
+      <td><span class="network network-{{ row.network }}">{{ row.network }}</span></td>
+      <td>{{ row.profile }}</td>
+      <td><code>{{ row.revision }}</code></td>
+      <td><span class="status status-{{ row.status.class() }}">{{ row.status.label() }}</span></td>
+      <td class="toggle"><div class="toggle-forms">
+        {% for (value, label) in row.status.actions() %}
+        <form method="post" action="/protocols/{{ row.slug }}">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="enabled" value="{{ value }}">
+          <button type="submit"{% if *value == "off" %} class="secondary"{% endif %}>{{ label }}</button>
+        </form>
+        {% endfor %}
+      </div></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="note">A protocol marked <em>update required</em> changed since you
+turned it on; its tools stay hidden until you update it.
+Then <a href="/connect">refresh the connection in ChatGPT</a>.</p>
+{% endif %}
+{% endblock %}

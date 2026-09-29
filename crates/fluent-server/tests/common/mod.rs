@@ -12,6 +12,7 @@ use fluent_core::registration::load_dir;
 use fluent_core::{Config, Engine};
 use fluent_server::http::HttpServer;
 use fluent_server::mcp::{AllRegistrations, FluentHandler};
+use fluent_server::site::Site;
 use jsonwebtoken::jwk::{Jwk, JwkSet};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use rsa::RsaPrivateKey;
@@ -147,7 +148,18 @@ impl Running {
 
     /// Starts `config` serving `handler`.
     pub async fn start_with(config: &Config, handler: FluentHandler) -> Running {
-        let server = HttpServer::bind(config, handler).await.expect("bind");
+        Running::start_with_site(config, handler, None).await
+    }
+
+    /// Starts `config` serving `handler` and, when there is one, `site`.
+    pub async fn start_with_site(
+        config: &Config,
+        handler: FluentHandler,
+        site: Option<Site>,
+    ) -> Running {
+        let server = HttpServer::bind_with_site(config, handler, site)
+            .await
+            .expect("bind");
         let addr: SocketAddr = server.local_addr().expect("local address");
         let (stop, stopped) = oneshot::channel::<()>();
         tokio::spawn(server.run(async {

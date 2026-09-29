@@ -13,16 +13,18 @@ bundle loader with its registry artifact fetch, the tool catalog and the
 transaction preparation engine, and the MCP server over stdio and over
 Streamable HTTP with bearer-token or OAuth 2.1 (OIDC) authentication, and the
 hosted SQLite store of users and their registration selections that scopes each
-OIDC user's tools (`fluent admin` revokes a user or prints their selections).
-Quotas and the site are added later.
+OIDC user's tools (`fluent admin` revokes a user or prints their selections),
+and the companion site where users sign in and choose those selections.
+Quotas are added later.
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
 | `crates/fluent-core` | Library: configuration, errors, result envelopes, address inspection, registration bundles, tool catalog, preparation engine and transaction summaries. |
-| `crates/fluent-server` | The `fluent` binary: CLI, the MCP server over stdio and HTTP, and the hosted selection store (migrations in `migrations/`); later the site. |
+| `crates/fluent-server` | The `fluent` binary: CLI, the MCP server over stdio and HTTP, the hosted selection store (migrations in `migrations/`) and the companion site (templates in `templates/`, stylesheet in `static/`). |
 | `examples/config` | Example configurations, loaded by the tests. |
+| `docs/site` | Screenshots of the companion site. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/tii` | TII files used without a registration, such as the SDK spec's `complex.tii`. |
 | `crates/fluent-core/tests/golden` | Reviewed tool descriptor lists the catalog tests compare against. |
@@ -267,11 +269,71 @@ client. Then:
    example `https://fluent.tx3.land/mcp`, with OAuth authentication.
 3. ChatGPT reads the `401` challenge and the protected resource metadata,
    finds the issuer, and sends you through its sign-in. Complete it.
-4. After the server's tools change (new or updated registrations), refresh the
-   connector in ChatGPT's settings so it lists them again.
+4. After the server's tools change (new or updated registrations, or a
+   changed selection on the [site](#companion-site)), refresh the connector
+   in ChatGPT's settings so it lists them again.
 
 See OpenAI's [Connect from ChatGPT](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 and the [MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization).
+
+### Companion site
+
+With `[site].enabled = true`, `fluent serve --http` also serves a small
+browser site where users sign in and choose the registrations their MCP
+sessions see. It requires `oidc` authentication and a `[store]`: users sign in
+with the same issuer as `/mcp`, and their choices are the store's selections.
+Pages are server-rendered without scripts and share one stylesheet.
+
+| Route | Signed in | Serves |
+| --- | --- | --- |
+| `GET /` | no | Landing page with the sign-in button. |
+| `GET /auth/login` | no | Redirects to the issuer's sign-in. |
+| `GET /auth/callback` | no | Finishes the sign-in, then redirects to `/protocols`. |
+| `POST /auth/logout` | yes | Ends the session, then redirects to `/`. |
+| `GET /protocols` | yes | Every registration: protocol, version, network, profile, revision, status (enabled, disabled or update required) and a toggle. |
+| `POST /protocols/{slug}` | yes | `enabled=on` selects the registration at its current revision; `enabled=off` deselects it. |
+| `GET /connect` | yes | The MCP server URL, `{public_url}/mcp`, the ChatGPT steps above and the user's enabled protocols. |
+| `GET /site.css` | no | The stylesheet. |
+
+Sign-in is the OAuth 2.1 authorization code flow with PKCE (S256), as a
+confidential client (`oidc_client_id_env`, `oidc_client_secret_env`) that
+redirects to `redirect_url`, which must be `{public_url}/auth/callback` or
+another URL registered with the issuer. The issuer's endpoints come from
+`{issuer}/.well-known/openid-configuration`, fetched on the first sign-in; the
+document must name the same issuer. The site asks for `openid email profile`,
+and the userinfo `sub` becomes the store user, the same subject the issuer's
+access tokens carry to `/mcp`.
+
+A session is a signed, HTTP-only, `SameSite=Lax` cookie that lasts seven days,
+`Secure` when `redirect_url` is `https`. The key is derived from the value of
+`session_secret_env`, which must be at least 32 bytes; changing it ends every
+session. A sign-in in progress keeps its state and PKCE verifier in a second
+such cookie for ten minutes.
+
+A signed-in page without a session redirects to `/`. A revoked user is
+refused with `403` and their session cookie removed. Every form carries the
+session's CSRF token; a POST without it is refused with `403`. An unknown
+slug is `404`. Selection changes are announced to the user's open MCP
+sessions as `notifications/tools/list_changed`. With `[site].enabled = false`
+none of these routes exist (`404`).
+
+![The landing page](docs/site/landing.png)
+![The protocols page, with a stale and an enabled registration](docs/site/protocols.png)
+![The connect page](docs/site/connect.png)
+
+To try it locally against the Tx3 Auth0 tenant, whose site application
+allows the callback `http://localhost:8080/auth/callback`, run a
+copy of `examples/config/hosted.toml` with `listen = "127.0.0.1:8080"`,
+`public_url = "http://localhost:8080"`, a local `sqlite_path` and
+`redirect_url = "http://localhost:8080/auth/callback"`:
+
+```sh
+FLUENT_SESSION_SECRET=$(openssl rand -hex 32) \
+FLUENT_OIDC_CLIENT_ID=… FLUENT_OIDC_CLIENT_SECRET=… \
+fluent serve --http --config fluent.local.toml
+```
+
+and open `http://localhost:8080`.
 
 ## Configuration reference
 
@@ -335,12 +397,13 @@ See [Over HTTP](#over-http) for how each mode checks a request.
 
 ### `[site]` (optional)
 
-When `enabled = true`, every other key is required.
+When `enabled = true`, every other key is required, and so are
+`auth.mode = "oidc"` and a `[store]`. See [Companion site](#companion-site).
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `enabled` | boolean | `false` | Whether the browser site is served. |
-| `session_secret_env` | variable name | none | Variable holding the session cookie signing key. |
+| `session_secret_env` | variable name | none | Variable holding the session cookie signing key, at least 32 bytes. |
 | `oidc_client_id_env` | variable name | none | Variable holding the OIDC client ID used for sign-in. |
 | `oidc_client_secret_env` | variable name | none | Variable holding the OIDC client secret used for sign-in. |
 | `redirect_url` | URL | none | OIDC redirect URL registered with the identity provider. |
@@ -659,7 +722,12 @@ Nothing the engine logs contains an argument value or an API key.
 - `fluent_server::http`: `HttpServer` (`bind`, `local_addr`, `run`),
   `router`, `shutdown_signal` and `MAX_BODY_BYTES`; `http::auth`:
   `Authenticator`, the `require_auth` middleware, `Principal` (`sub`,
-  `email`) and `ProtectedResourceMetadata`.
+  `email`) and `ProtectedResourceMetadata`. `HttpServer::bind_with_site` also
+  serves a `Site`.
+- `fluent_server::site`: `Site` (`new` over the configuration, a `Store` and
+  the catalog, `None` when disabled; `router`); `site::oidc::Oidc` (the
+  sign-in client: `begin`, `finish` → `Identity`); `site::session::Cookies`
+  (signed `Session` and `PendingLogin` cookies).
 
 ## License
 

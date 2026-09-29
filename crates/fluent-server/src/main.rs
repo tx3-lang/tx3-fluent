@@ -11,6 +11,7 @@ use fluent_core::registration::{self, Loaded};
 use fluent_core::{Config, Engine, FluentError, PrepareRequest};
 use fluent_server::http::{HttpServer, shutdown_signal};
 use fluent_server::mcp::{AllRegistrations, FluentHandler, Scoping, error_json};
+use fluent_server::site::Site;
 use fluent_server::store::{Store, UserScopes};
 use rmcp::ServiceExt;
 use serde::Serialize;
@@ -62,8 +63,8 @@ enum Command {
     },
     /// Serve the loaded registrations' tools over MCP. Logs go to stderr as
     /// JSON lines. Over HTTP with `oidc` authentication and a `[store]`, each
-    /// user sees the registrations they selected; otherwise every session sees
-    /// every registration.
+    /// user sees the registrations they selected, and chooses them on the site
+    /// when `[site].enabled`; otherwise every session sees every registration.
     #[command(group(ArgGroup::new("transport").required(true).args(["stdio", "http"])))]
     Serve {
         /// Speak MCP over stdin and stdout.
@@ -252,29 +253,34 @@ async fn serve(config: &Path, http: bool) -> anyhow::Result<ExitCode> {
     }
     let catalog = Arc::new(registrations.catalog);
     let engine = Arc::new(Engine::new(&loaded, &catalog));
-    let scoping: Arc<dyn Scoping> = match (&loaded.store, &loaded.auth) {
+    // The site shares the store with the scopes, so its selection changes
+    // reach open sessions as `tools/list_changed`.
+    let (scoping, site): (Arc<dyn Scoping>, Option<Site>) = match (&loaded.store, &loaded.auth) {
         (Some(store), AuthConfig::Oidc { .. }) if http => {
             let path = &store.sqlite_path;
             tracing::info!(
                 store = %path.display(),
                 "each user sees the registrations they selected"
             );
-            Arc::new(UserScopes::new(
-                Store::open(path).await?,
-                Arc::clone(&catalog),
-            ))
+            let store = Store::open(path).await?;
+            let site = Site::new(&loaded, store.clone(), Arc::clone(&catalog))
+                .context("configuring the site")?;
+            let scoping = Arc::new(UserScopes::new(store, Arc::clone(&catalog)));
+            (scoping, site)
         }
-        _ => Arc::new(AllRegistrations::new(&catalog)),
+        _ => (Arc::new(AllRegistrations::new(&catalog)), None),
     };
     let handler = FluentHandler::new(Arc::clone(&catalog), engine, scoping)
         .context("building the tool catalog")?;
     let tools = handler.tools().len();
 
     if http {
-        let server = HttpServer::bind(&loaded, handler).await?;
+        let site_enabled = site.is_some();
+        let server = HttpServer::bind_with_site(&loaded, handler, site).await?;
         tracing::info!(
             registrations = catalog.len(),
             tools,
+            site = site_enabled,
             address = %server.local_addr()?,
             "serving MCP over HTTP"
         );

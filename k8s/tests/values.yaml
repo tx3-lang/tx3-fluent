@@ -1,0 +1,29 @@
+# Render-test values for k8s/test.sh. Bundles come from the reviewed hosted
+# bundle through --set-file, as an instance would supply them.
+image:
+  tag: sha-deadbee
+
+existingSecret: fluent-test
+
+config: |
+  [server]
+  listen = "127.0.0.1:8080"
+  public_url = "https://fluent.example.org"
+
+  [registrations]
+  dir = "/somewhere/else"
+
+  [networks.preprod]
+  trp_url = "https://trp.example.org"
+
+  [auth]
+  mode = "token"
+  token_env = "FLUENT_API_TOKEN"
+
+  [store]
+  sqlite_path = "/data/fluent.sqlite"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi

@@ -1,0 +1,126 @@
+{{- if not .Values.registrations }}
+{{- fail "registrations: at least one bundle is required; supply each file with --set-file" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tx3-fluent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tx3-fluent.labels" . | nindent 4 }}
+spec:
+  # One replica, Recreate: MCP sessions live in the process's memory, so a
+  # second replica cannot serve a session the first one started, and the
+  # SQLite store is one file on an RWO volume that two pods must never share.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tx3-fluent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tx3-fluent.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pod when the configuration or a bundle changes; both are
+        # read only at start.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # Service links would inject variables such as FLUENT_PORT_8080_TCP
+      # into a release named `fluent`; nothing here needs them, and a FLUENT_
+      # variable with `__` that names no configuration key stops the server.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The image runs as uid 1000; fsGroup makes the store volume writable
+      # by it.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fluent
+          image: {{ include "tx3-fluent.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["fluent"]
+          args: ["serve", "--http", "--config", "/etc/fluent/fluent.toml"]
+          env:
+            # The chart owns the port and the bundle layout, so these two
+            # override whatever fluent.toml says.
+            - name: FLUENT_SERVER__LISTEN
+              value: "0.0.0.0:8080"
+            - name: FLUENT_REGISTRATIONS__DIR
+              value: /etc/fluent/registrations
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ required "existingSecret is required: the Secret holding the variables fluent.toml names" .Values.existingSecret }}
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/fluent
+              readOnly: true
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "tx3-fluent.fullname" . }}-config
+            items:
+              - key: fluent.toml
+                path: fluent.toml
+              {{- range $slug, $_ := .Values.registrations }}
+              - key: {{ $slug }}.registration.toml
+                path: registrations/{{ $slug }}/registration.toml
+              - key: {{ $slug }}.SKILL.md
+                path: registrations/{{ $slug }}/SKILL.md
+              {{- end }}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "tx3-fluent.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}

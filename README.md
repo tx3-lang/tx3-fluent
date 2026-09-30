@@ -36,6 +36,7 @@ Prometheus metrics at `/metrics`; see [the operations guide](docs/operations.md)
 | `docs/journey-evidence.md` | How to produce the spike's acceptance evidence: ChatGPT journeys, a transcript from the logs and decode checks. |
 | `Dockerfile`, `docker-compose.yml` | The container image, published as `ghcr.io/tx3-lang/tx3-fluent`, and a self-hosting Compose example. |
 | `tests/container_smoke.sh` | Builds the image and checks it serves the fixture registrations over HTTP. |
+| `k8s/` | The Helm chart for Kubernetes, instance-agnostic, and its render tests. |
 | `docs/site` | Screenshots of the companion site. |
 | `crates/fluent-core/tests/fixtures/registrations` | Valid and invalid registration bundles, loaded by the tests. |
 | `crates/fluent-core/tests/fixtures/registry` | Published registry artifacts (manifest and TII, byte for byte) that the hosted-bundle tests serve offline. |

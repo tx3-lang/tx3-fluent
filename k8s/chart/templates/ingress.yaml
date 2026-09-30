@@ -1,0 +1,39 @@
+{{- if .Values.ingress.enabled }}
+{{- $host := required "ingress.host is required when the ingress is enabled" .Values.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "tx3-fluent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tx3-fluent.labels" . | nindent 4 }}
+  {{- if or .Values.ingress.clusterIssuer .Values.ingress.annotations }}
+  annotations:
+    {{- with .Values.ingress.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ . }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  ingressClassName: {{ required "ingress.className is required when the ingress is enabled" .Values.ingress.className }}
+  rules:
+    # Everything under the host: /mcp, the protected-resource metadata,
+    # /healthz and the site's pages. /metrics answers remote callers only
+    # with its bearer token.
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "tx3-fluent.fullname" . }}
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - {{ $host }}
+      secretName: {{ required "ingress.tlsSecretName is required when the ingress is enabled" .Values.ingress.tlsSecretName }}
+{{- end }}

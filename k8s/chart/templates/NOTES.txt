@@ -1,0 +1,17 @@
+{{ .Chart.Name }} {{ .Chart.Version }} — {{ include "tx3-fluent.image" . }}
+
+Bundles: {{ keys .Values.registrations | sortAlpha | join ", " }}
+{{ if .Values.ingress.enabled }}
+Public: https://{{ .Values.ingress.host }}/  (MCP at /mcp)
+  Needs a DNS record for {{ .Values.ingress.host }} pointing at the
+  `{{ .Values.ingress.className }}` ingress load balancer.
+{{ end }}
+Smoke test:
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "tx3-fluent.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "tx3-fluent.fullname" . }} | grep -i registration
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "tx3-fluent.fullname" . }} 18080:{{ .Values.service.port }}
+  curl -sS http://localhost:18080/healthz                                   # {"status":"ok",…}
+  curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://localhost:18080/mcp  # 401
+
+Bundles and configuration load only at start: changing either rolls the pod.
+A changed Secret does not; restart the Deployment after rotating one.

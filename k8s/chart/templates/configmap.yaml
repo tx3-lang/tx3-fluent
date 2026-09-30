@@ -1,0 +1,24 @@
+{{/*
+fluent.toml and every registration bundle in one ConfigMap. ConfigMap keys
+cannot hold `/`, so bundle files are keyed `<slug>.<file>` here and placed
+into `registrations/<slug>/` by the Deployment's volume items.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tx3-fluent.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tx3-fluent.labels" . | nindent 4 }}
+data:
+  fluent.toml: |
+    {{- required "config is required: fluent.toml, verbatim" .Values.config | nindent 4 }}
+  {{- range $slug, $bundle := .Values.registrations }}
+  {{- if not (regexMatch "^[a-z][a-z0-9_]{2,40}$" $slug) }}
+  {{- fail (printf "registrations.%s: a slug matches ^[a-z][a-z0-9_]{2,40}$, as in registration.toml" $slug) }}
+  {{- end }}
+  {{ $slug }}.registration.toml: |
+    {{- required (printf "registrations.%s.registration is required" $slug) $bundle.registration | nindent 4 }}
+  {{ $slug }}.SKILL.md: |
+    {{- required (printf "registrations.%s.skill is required" $slug) $bundle.skill | nindent 4 }}
+  {{- end }}

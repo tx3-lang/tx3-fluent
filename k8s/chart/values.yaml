@@ -1,0 +1,110 @@
+# Tx3 Fluent over Streamable HTTP: one `fluent serve --http` process, its
+# configuration and registration bundles from a ConfigMap, and its SQLite
+# store on a volume.
+#
+# These defaults are instance-agnostic: no cluster, hostname, identity
+# provider, bundle or credential is assumed. Everything an instance must supply
+# is empty here and `required` in the templates, so a missing value fails at
+# render rather than deploying a half-configured server. The operator supplies
+# them from its infrastructure repository (values file, secrets manifest,
+# runbook).
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/tx3-lang/tx3-fluent
+  # A release tag (vX.Y.Z) or an exact build (sha-<commit>), never `latest`:
+  # a restart must not change the version. Required.
+  tag: ""
+  # Optional. When set, the image renders as repository:tag@digest.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# fluent.toml, carried verbatim. Required. `[server].listen` and
+# `[registrations].dir` are overridden by the chart (see the Deployment), so
+# whatever the file says for them is ignored. Keys ending in `_env` name
+# variables that `existingSecret` must provide.
+config: ""
+
+# Registration bundles, one entry per slug. Bundles are content, not
+# configuration: supply each file with --set-file so the reviewed file is what
+# ships, for example
+#
+#   --set-file registrations.transfer_preprod.registration=…/registration.toml
+#   --set-file registrations.transfer_preprod.skill=…/SKILL.md
+#
+# Each bundle is `registration.toml` plus `SKILL.md`, so its `[skill].path`
+# must be `SKILL.md`. Registry-sourced bundles carry no TII; the server fetches
+# it by digest at start. The bundle directory is read-only, so the registry
+# cache cannot be written and the artifact is fetched on every start (a
+# warning in the log, not an error).
+registrations: {}
+
+# Secret whose keys become the container's environment: the variables that
+# the config's `*_env` keys name (TRP API keys, OIDC client, session secret,
+# metrics or API token). Referenced by name, never templated. Required: every
+# mode that listens beyond loopback authenticates with a secret.
+existingSecret: ""
+
+# Extra environment, for example RUST_LOG. A FLUENT_ variable with `__` must
+# name a real configuration key, or the server refuses to start.
+env: {}
+
+# The SQLite store (users, selections, quota counts). Point `[store]
+# sqlite_path` into mountPath. Losing it resets every user's selections, so a
+# helm uninstall keeps the claim.
+persistence:
+  enabled: true
+  size: 1Gi
+  # Empty string uses the cluster default StorageClass.
+  storageClass: ""
+  mountPath: /data
+
+service:
+  type: ClusterIP
+  port: 8080
+  # Proxy settings that live on the Service (for example ingress-controller
+  # timeouts) belong to the instance.
+  annotations: {}
+
+# Public HTTPS through a cluster ingress controller. `/mcp` answers only
+# requests whose Host is public_url's host, so the controller must pass the
+# original Host header. Streamable HTTP holds event streams open: give the
+# controller an idle timeout above limits.global_cutoff_secs and turn off
+# response buffering, through its annotations.
+ingress:
+  enabled: false
+  className: ""
+  # Optional: cert-manager issues the certificate named in tlsSecretName.
+  clusterIssuer: ""
+  host: ""
+  tlsSecretName: ""
+  annotations: {}
+
+# On SIGTERM the server ends its MCP sessions and waits for requests in
+# flight; a call can run up to limits.global_cutoff_secs (45 s by default),
+# so the grace period must be longer.
+terminationGracePeriodSeconds: 60
+
+# All three probe GET /healthz, which answers only once the registrations are
+# loaded and the listener is up. Registry fetches happen before that, up to
+# 20 s each, so the startup budget is generous.
+probes:
+  startup:
+    periodSeconds: 5
+    failureThreshold: 36
+  readiness:
+    periodSeconds: 10
+  liveness:
+    periodSeconds: 20
+
+# Instance placement. Empty means "anywhere the scheduler likes", which is
+# rarely right on a tainted cluster.
+nodeSelector: {}
+tolerations: []
+
+# No default: the working set depends on the instance's limits and traffic.
+resources: {}
+
+podAnnotations: {}

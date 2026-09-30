@@ -65,6 +65,18 @@ jobs:
           persist-credentials: false
       - run: tests/container_smoke.sh
 
+  chart:
+    name: helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v3.17.3
+      - run: k8s/test.sh
+
   # Prepares a transfer against the live preprod resolver
   # (crates/fluent-core/tests/live_preprod.rs). Without the API key secret, as
   # on pull requests from forks, the URL stays empty and the test skips green.

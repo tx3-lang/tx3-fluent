@@ -1,0 +1,14 @@
+apiVersion: v2
+name: tx3-fluent
+description: Tx3 Fluent over Streamable HTTP, serving registration bundles as per-transaction MCP tools
+type: application
+# Chart version: this chart. appVersion: the fluent release it was written
+# against. Both are bumped by hand; the image an instance runs is image.tag in
+# its own values file.
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/tx3-lang/tx3-fluent
+keywords:
+  - tx3
+  - mcp
+  - cardano

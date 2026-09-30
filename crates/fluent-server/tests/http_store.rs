@@ -127,6 +127,28 @@ impl Hosted {
             .collect()
     }
 
+    /// The tool names a sessionless `tools/list` as `token` returns.
+    async fn listed_sessionless(&self, token: &str) -> BTreeSet<String> {
+        let reply = rpc_reply(self.server.post_sessionless(&list_tools(), token).await).await;
+        reply["result"]["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a tool list: {reply}"))
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("a tool name").to_string())
+            .collect()
+    }
+
+    /// The tool result of a sessionless call of `name` with `args` as `token`.
+    async fn call_sessionless(&self, token: &str, name: &str, args: Value) -> Value {
+        let reply = rpc_reply(
+            self.server
+                .post_sessionless(&call_tool(name, args), token)
+                .await,
+        )
+        .await;
+        reply["result"].clone()
+    }
+
     /// The tool result of calling `name` with `args` in `session`.
     async fn call(&self, (token, session): &(String, String), name: &str, args: Value) -> Value {
         let reply = rpc_reply(
@@ -211,6 +233,40 @@ async fn two_users_see_disjoint_tool_lists() {
     let alice_only: BTreeSet<_> = alice.difference(&fixed).collect();
     let bob_only: BTreeSet<_> = bob.difference(&fixed).collect();
     assert!(alice_only.is_disjoint(&bob_only));
+}
+
+#[tokio::test]
+async fn a_sessionless_client_sees_and_calls_its_own_selection() {
+    // From protocol 2026-07-28 a client sends no `initialize` and holds no
+    // session: every request stands alone and must be scoped by its own token.
+    let site = Site::new().await;
+    let hosted = site.start().await;
+    hosted.select("alice", STRIKE).await;
+    let alice = keys().0.sign(&claims("alice"));
+    let carol = keys().0.sign(&claims("carol"));
+
+    assert_eq!(
+        hosted.listed_sessionless(&alice).await,
+        with_fixed(&tools_of(&hosted.catalog, STRIKE))
+    );
+    assert_eq!(hosted.listed_sessionless(&carol).await, fixed_tools());
+
+    let result = hosted
+        .call_sessionless(&alice, "fluent_get_skill", json!({"protocol": STRIKE}))
+        .await;
+    assert_ne!(result["isError"], json!(true), "{result}");
+    let result = hosted
+        .call_sessionless(&carol, &any_tool(&hosted.catalog, STRIKE), json!({}))
+        .await;
+    assert_eq!(error_code(&result), "registration_unavailable");
+
+    let admin = Store::open(&site.store_path()).await.expect("open store");
+    admin.revoke("alice").await.expect("revoke");
+    assert!(hosted.listed_sessionless(&alice).await.is_empty());
+    let result = hosted
+        .call_sessionless(&alice, "fluent_inspect_address", json!({"address": "x"}))
+        .await;
+    assert_eq!(error_code(&result), "unauthorized");
 }
 
 #[tokio::test]

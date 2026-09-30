@@ -27,11 +27,14 @@ The evidence covers six items:
   [the hosted deployment guide](hosted-deployment.md).
 - **Two accounts.** Accounts A and B sign in to the identity provider with
   different subjects. ChatGPT needs developer mode on. One ChatGPT account
-  can serve both, one at a time: to switch, delete the Fluent connector in
-  ChatGPT's settings, sign out of the site and of the identity provider (for
-  Auth0, `https://<tenant>/v2/logout`), then connect again and sign in as the
-  other account. Without the identity-provider sign-out, the connector signs
-  straight back in as the previous account.
+  can serve both, one at a time: to switch, disconnect the Fluent connector
+  in ChatGPT's settings, sign out of the site and of the identity provider
+  (for Auth0, `https://<tenant>/v2/logout`), then reconnect and sign in as
+  the other account. Without the identity-provider sign-out, the connector
+  signs straight back in as the previous account. Disconnect rather than
+  delete: a new connector identifies itself with a new client metadata
+  document URL, which an identity provider that registers such clients by
+  hand (Auth0 does) must import again.
 - **Addresses.** A funded preprod address for A (the sender) and a second
   preprod address (the receiver).
 - **Evidence directory.** One directory per session date, for example

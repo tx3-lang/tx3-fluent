@@ -4,9 +4,9 @@ The public Fluent runs the same image operators self-host,
 `ghcr.io/tx3-lang/tx3-fluent`, with
 [`examples/config/hosted.toml`](../examples/config/hosted.toml): OIDC callers,
 a SQLite store of users and selections, per-user quotas and the companion
-site. This page lists what that deployment needs from its platform. How to
-roll it out (manifests, secrets management, DNS and TLS) belongs to the
-platform and is not covered here.
+site. This page lists what that deployment needs from its platform. On
+Kubernetes, the [Helm chart](../k8s/README.md) packages all of it; the
+instance's values, its Secret, DNS and TLS issuance stay with the platform.
 
 ## Image
 
@@ -36,6 +36,11 @@ Mount one persistent volume at `/data`, writable by uid 1000 (on Kubernetes,
 loaded once at startup: publishing, changing or removing one takes a restart
 (a rollout).
 
+The Helm chart lays this out differently: the configuration and the bundles
+come read-only from a ConfigMap at `/etc/fluent/fluent.toml` and
+`/etc/fluent/registrations`, and only the store lives on the `/data` volume.
+Commands run in its container take `--config /etc/fluent/fluent.toml`.
+
 ## Environment
 
 `hosted.toml` names its secrets by variable; the platform supplies the values
@@ -63,7 +68,11 @@ fluent registrations check --config /data/fluent.toml
 ```
 
 `config check` prints the configuration with each secret shown as `"<set>"` or
-`"<unset>"`; `serve --http` refuses to start while a named secret is unset.
+`"<unset>"`. `serve --http` refuses to start while the metrics token, the API
+token (`token` mode) or a site secret is unset, and while the session secret
+is shorter than 32 bytes. An unset TRP API key does not stop it: calls to that
+network go out without the `dmtr-api-key` header, and a keyed endpoint
+rejects them.
 
 ## Network
 
@@ -90,19 +99,10 @@ front of it and route `public_url` (`https://fluent.tx3.land`) to that port.
 | `GET /healthz` | none | Liveness and readiness. Answers `200 {"status":"ok","version":"…"}` once the registrations are loaded and the listener is up. |
 | `GET /metrics` | `Authorization: Bearer $FLUENT_METRICS_TOKEN` | Prometheus scrape. Only a direct loopback caller may omit the token, and a request with `Forwarded` or `X-Forwarded-For` always needs it. |
 
-On Kubernetes, for example:
-
-```yaml
-readinessProbe:
-  httpGet: { path: /healthz, port: 8080 }
-livenessProbe:
-  httpGet: { path: /healthz, port: 8080 }
-  periodSeconds: 20
-```
-
-and a scrape job with `authorization: { credentials: <metrics token> }`.
-Registry fetches happen before the listener starts, and each may take up to
-20 seconds, so allow for them in the first readiness check.
+On Kubernetes the chart probes `/healthz` for startup, readiness and
+liveness. Registry fetches happen before the listener starts, and each may
+take up to 20 seconds, so the startup probe allows three minutes. A scrape job
+needs `authorization: { credentials: <metrics token> }`.
 
 The series, the queries worth alerting on and how to size `[limits]` from
 them are in [the operations guide](operations.md), which also lists what the

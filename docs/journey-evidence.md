@@ -14,7 +14,7 @@ The evidence covers six items:
 | E1 | [Two-account isolation](#e1-two-account-isolation) | An account sees and calls only the registrations it selected. |
 | E2 | [Metadata refresh](#e2-metadata-refresh) | A changed selection reaches ChatGPT after a connector refresh. |
 | E3 | [Transfer journey](#e3-transfer-journey) | ChatGPT gets the skill, gathers inputs and prepares an unsigned transfer. |
-| E4 | [Strike journey](#e4-strike-journey) | The same for Strike staking. |
+| E4 | [Strike journey](#e4-strike-journey) | Out of the spike's scope: no hosted Strike bundle. |
 | E5 | [Decode check](#e5-decode-check) | Each prepared transaction pays what was asked, on the asked network. |
 | E6 | [Unsupported requests](#e6-unsupported-requests) | Requests Fluent cannot serve are declined or refused, and nothing is signed or submitted. |
 
@@ -26,10 +26,14 @@ The evidence covers six items:
   [`deploy/hosted/registrations`](../deploy/hosted/registrations). See
   [the hosted deployment guide](hosted-deployment.md).
 - **Two accounts.** Accounts A and B sign in to the identity provider with
-  different subjects. Each has its own ChatGPT account with developer mode on.
+  different subjects. ChatGPT needs developer mode on. One ChatGPT account
+  can serve both, one at a time: to switch, delete the Fluent connector in
+  ChatGPT's settings, sign out of the site and of the identity provider (for
+  Auth0, `https://<tenant>/v2/logout`), then connect again and sign in as the
+  other account. Without the identity-provider sign-out, the connector signs
+  straight back in as the previous account.
 - **Addresses.** A funded preprod address for A (the sender) and a second
-  preprod address (the receiver). For Strike, a mainnet address that holds
-  STRIKE, or an existing staking position.
+  preprod address (the receiver).
 - **Evidence directory.** One directory per session date, for example
   `evidence/2026-10-01/`, outside this repository. It holds the saved logs,
   the transcript, both conversation exports and the decode checks.
@@ -50,7 +54,7 @@ After the session, save the deployment's logs for its time window and render
 the transcript offline:
 
 ```sh
-kubectl logs <fluent pod> --since-time=2026-10-01T14:00:00Z \
+kubectl -n <namespace> logs deploy/<release> --since-time=2026-10-01T14:00:00Z \
   > evidence/2026-10-01/fluent.log
 cargo xtask transcript --logs evidence/2026-10-01/fluent.log \
   --out evidence/2026-10-01/transcript.md
@@ -78,7 +82,9 @@ by time, principal and tool.
 
 1. As A, sign in at `https://fluent.tx3.land`, enable `transfer_preprod` on
    **Protocols**, and connect ChatGPT as **Connect** describes.
-2. As B, sign in, enable nothing, and connect ChatGPT the same way.
+2. As B, sign in, enable nothing, and connect ChatGPT the same way (with a
+   single ChatGPT account, switch as [Before you start](#before-you-start)
+   describes).
 3. In B's ChatGPT, ask: *"Send 5 ADA on preprod from addr_test1… to
    addr_test1…"*.
 
@@ -90,6 +96,8 @@ A's has 3, and any call B makes to the transfer tool has outcome
 `registration_unavailable`.
 
 ## E2. Metadata refresh
+
+Run it as either account; the steps below use B.
 
 1. As B, enable `transfer_preprod` on **Protocols**.
 2. In ChatGPT's settings, refresh B's connector.
@@ -127,13 +135,13 @@ transaction.
 
 ## E4. Strike journey
 
-The Strike journey needs a hosted Strike bundle. There is none yet:
-`open-tx3/strike-staking:0.2.0` is not published, so
+Out of the spike's scope: the founder narrowed it to the transfer journey on
+2026-09-30. The Strike journey needs a hosted Strike bundle, and there is
+none: `open-tx3/strike-staking:0.2.0` is not published, so
 [`deploy/hosted/registrations`](../deploy/hosted/registrations) holds only
-`transfer_preprod`. Until the bundle exists, record its absence as a spike
-finding. Do not substitute another source or a mocked resolution.
+`transfer_preprod`. Do not substitute another source or a mocked resolution.
 
-Once it is deployed, repeat [E3](#e3-transfer-journey) with Strike: A enables
+When a Strike bundle is deployed, repeat [E3](#e3-transfer-journey) with Strike: A enables
 the Strike registration and asks ChatGPT to stake, add to a stake or withdraw
 a stake. ChatGPT must read the skill first, obtain the STRIKE balance and
 staking UTxO it declares as external dependencies from the user (or say it
@@ -196,7 +204,7 @@ the saved logs beside the transcript they were rendered from.
 | E1 | *founder: A and B exports* | *founder* | n/a | *founder* |
 | E2 | *founder* | *founder* | n/a | *founder* |
 | E3 | *founder: one per request* | *founder* | *founder: one per transaction* | *founder* |
-| E4 | *founder, or "no hosted Strike bundle"* | *founder* | *founder* | *founder* |
+| E4 | n/a: out of scope (no hosted Strike bundle) | n/a | n/a | n/a |
 | E5 | n/a | n/a | *founder* | *founder* |
 | E6 | *founder* | *founder* | n/a | *founder* |
 

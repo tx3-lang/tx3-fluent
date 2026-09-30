@@ -31,8 +31,13 @@
 //! cutoff. Each tool call is traced in a `tool_call` span carrying the tool,
 //! `sub_hash` (a SHA-256 prefix of the principal's `sub`), `registration`,
 //! `tx`, the argument *names*, `outcome` (`ok` or the error code) and
-//! `duration_ms`; never an argument value. Transaction tool calls are also
-//! [measured](crate::metrics).
+//! `duration_ms`; never an argument value. A call to a tool the catalog does
+//! not have is logged with outcome `unknown_tool`. Transaction tool calls are
+//! also [measured](crate::metrics).
+//!
+//! Each `tools/list` answered is logged at `info` with `sub_hash` and the
+//! listed tool names, so a session's view of the catalog can be read back
+//! from the logs.
 
 use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
@@ -394,6 +399,12 @@ impl ServerHandler for FluentHandler {
             warn!(code = %err.code(), "listing the session's tools failed: {err}");
             ErrorData::internal_error("the session's tools are unavailable", None)
         })?;
+        info!(
+            sub_hash = self.principal().map(|p| sub_hash(&p.sub)),
+            tools = %tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(","),
+            count = tools.len(),
+            "listed the session's tools"
+        );
         Ok(ListToolsResult::with_all_items(
             tools.into_iter().map(to_tool).collect(),
         ))
@@ -438,6 +449,10 @@ impl ServerHandler for FluentHandler {
 
         let started = Instant::now();
         let Some(result) = self.call(name, args).instrument(span.clone()).await else {
+            let outcome = "unknown_tool";
+            span.record("outcome", outcome);
+            span.record("duration_ms", 0_u64);
+            span.in_scope(|| info!(tool = %name, outcome, "unknown tool"));
             return Err(ErrorData::invalid_params(
                 format!("unknown tool `{name}`"),
                 None,

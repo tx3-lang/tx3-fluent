@@ -151,7 +151,8 @@ not start within the 5 second admission wait were turned away as busy.
 `info`).
 
 Each tool call runs in a `tool_call` span and ends with one event, `tool call
-succeeded` or `tool call failed`. They carry:
+succeeded`, `tool call failed`, or `unknown tool` (outcome `unknown_tool`) for
+a tool the catalog does not have. They carry:
 
 | Field | Content |
 | --- | --- |
@@ -159,8 +160,15 @@ succeeded` or `tool call failed`. They carry:
 | `sub_hash` | The first 12 hex digits of the SHA-256 of the principal's `sub`, when there is a principal. Enough to follow one user; not their identity. |
 | `registration`, `tx` | The registration slug and transaction name, for transaction tools. |
 | `arguments` | The argument **names**, comma-separated. |
-| `outcome`, `code` | `ok` or the error code. |
+| `outcome`, `code` | `ok`, the error code, or `unknown_tool`. |
 | `duration_ms` | The call's duration, limits included. |
+
+Each `tools/list` answered logs one `listed the session's tools` event at
+`info` with `sub_hash`, `tools` (the listed names, comma-separated) and
+`count`, so what a session could see is on record.
+
+`cargo xtask transcript` renders these events into a Markdown transcript; see
+[the journey evidence guide](journey-evidence.md#record-the-session).
 
 Never logged, at any level:
 

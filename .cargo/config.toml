@@ -1,0 +1,4 @@
+# `cargo xtask <command>`: development and evidence tooling that is never
+# built into the `fluent` binary, the container image or a release.
+[alias]
+xtask = "run --quiet --package xtask --"

@@ -205,6 +205,37 @@ impl Running {
         request.send().await.expect("POST /mcp")
     }
 
+    /// POSTs one JSON-RPC request to `/mcp` the way a client on protocol
+    /// [`SESSIONLESS_PROTOCOL_VERSION`] does: no `initialize` and no session,
+    /// the protocol metadata in the request's own `_meta` and headers
+    /// (`Mcp-Method`, and `Mcp-Name` for a tool call).
+    pub async fn post_sessionless(&self, message: &Value, token: &str) -> reqwest::Response {
+        let mut message = message.clone();
+        message["params"]["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion": SESSIONLESS_PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {"name": "fluent-http-test", "version": "0"}
+        });
+        let method = message["method"].as_str().expect("a method").to_string();
+        let mut request = self
+            .client
+            .post(self.url("/mcp"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("authorization", format!("Bearer {token}"))
+            .header("mcp-protocol-version", SESSIONLESS_PROTOCOL_VERSION)
+            .header("mcp-method", &method);
+        if method == "tools/call" {
+            let name = message["params"]["name"].as_str().expect("a tool name");
+            request = request.header("mcp-name", name);
+        }
+        request
+            .body(message.to_string())
+            .send()
+            .await
+            .expect("POST /mcp")
+    }
+
     /// Initializes a session as `token`; the response and its session id.
     pub async fn initialize(&self, token: Option<&str>) -> (reqwest::StatusCode, Option<String>) {
         let response = self.post_mcp(&initialize(), token, None).await;
@@ -235,6 +266,10 @@ impl Drop for Running {
 }
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// The first protocol revision without `initialize` or sessions (SEP-2567);
+/// ChatGPT speaks it.
+pub const SESSIONLESS_PROTOCOL_VERSION: &str = "2026-07-28";
 
 pub fn initialize() -> Value {
     json!({

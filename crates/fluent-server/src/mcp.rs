@@ -4,8 +4,9 @@
 //! [`FluentHandler`] implements [`ServerHandler`] by hand, because its tools
 //! come from the registrations loaded at startup rather than from code.
 //! `tools/list` returns the [`ToolDescriptor`]s the session's [`ToolScope`]
-//! can see, which [`Scoping`] chooses when the session initializes;
-//! `tools/call` dispatches by name:
+//! can see, which [`Scoping`] chooses when the session initializes, or, for
+//! a client on protocol `2026-07-28` or later, which sends no `initialize`
+//! and holds no session, at its request; `tools/call` dispatches by name:
 //!
 //! - a transaction tool → [`Engine::prepare`];
 //! - `fluent_get_skill` → the registration's skill, as a [`SkillResult`];
@@ -21,10 +22,9 @@
 //! When [`Scoping::changes`] announces the session's subject, the session is
 //! sent `notifications/tools/list_changed`.
 //!
-//! Over HTTP, every session gets its own handler from
-//! [`FluentHandler::for_session`]. It records the [`Principal`] that
-//! initialized the session and refuses requests authenticated as anyone
-//! else.
+//! Over HTTP, every session, and every sessionless request, gets its own
+//! handler from [`FluentHandler::for_session`]. It records the [`Principal`]
+//! of its first request and refuses requests authenticated as anyone else.
 //!
 //! Transaction tools run under the handler's [`Limits`]: the session
 //! principal's daily quota, the server-wide concurrency gate and the global
@@ -146,9 +146,10 @@ pub struct FluentHandler {
     scoping: Arc<dyn Scoping>,
     tools: Arc<[ToolDescriptor]>,
     limits: Limits,
-    /// Who initialized this session; `None` inside when nobody authenticated.
+    /// Who made this session's first request; `None` inside when nobody
+    /// authenticated.
     principal: OnceLock<Option<Principal>>,
-    /// What this session sees, chosen at `initialize`.
+    /// What this session sees, chosen at its first request.
     scope: OnceLock<Arc<dyn ToolScope>>,
     /// Stops the session's change watcher when the session's handler drops.
     watcher: OnceLock<DropGuard>,
@@ -204,7 +205,7 @@ impl FluentHandler {
         }
     }
 
-    /// Who initialized this session: `None` before `initialize`, over stdio
+    /// Who made this session's first request: `None` before it, over stdio
     /// and when the server authenticates nobody.
     pub fn principal(&self) -> Option<&Principal> {
         self.principal.get().and_then(Option::as_ref)
@@ -225,12 +226,36 @@ impl FluentHandler {
         }
     }
 
+    /// Binds the handler to the principal of its first request and chooses
+    /// its scope, then refuses requests authenticated as anyone else. The
+    /// first request is `initialize` for a session; a client on protocol
+    /// `2026-07-28` or later sends no `initialize`, and each of its requests
+    /// gets a handler of its own, so the binding happens at that request.
+    async fn establish(&self, context: &RequestContext<RoleServer>) -> Result<(), ErrorData> {
+        if self.principal.set(request_principal(context)).is_err() {
+            self.check_principal(context)?;
+        }
+        if self.scope.get().is_none() {
+            let scope = self
+                .scoping
+                .scope_for(self.principal())
+                .await
+                .map_err(|err| {
+                    warn!(code = %err.code(), "choosing the session's scope failed: {err}");
+                    ErrorData::internal_error("the session's tools are unavailable", None)
+                })?;
+            let _ = self.scope.set(scope);
+        }
+        Ok(())
+    }
+
     /// Every tool of the catalog, whoever can see it.
     pub fn tools(&self) -> &[ToolDescriptor] {
         &self.tools
     }
 
-    /// The slugs this session's scope shows; nothing before `initialize`.
+    /// The slugs this session's scope shows; nothing before its first
+    /// request.
     async fn visible_slugs(&self) -> Result<Vec<String>, FluentError> {
         match self.scope.get() {
             Some(scope) => scope.visible_slugs().await,
@@ -360,30 +385,17 @@ impl ServerHandler for FluentHandler {
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
-        let principal = request_principal(&context);
-        if self.principal.set(principal).is_err() {
-            self.check_principal(&context)?;
-        }
-        if self.scope.get().is_none() {
-            let scope = self
-                .scoping
-                .scope_for(self.principal())
-                .await
-                .map_err(|err| {
-                    warn!(code = %err.code(), "choosing the session's scope failed: {err}");
-                    ErrorData::internal_error("the session's tools are unavailable", None)
-                })?;
-            if self.scope.set(scope).is_ok() {
-                let _ = self.active.set(metrics::Session::start());
-                if let (Some(changes), Some(principal)) = (self.scoping.changes(), self.principal())
-                {
-                    let _ = self.watcher.set(watch_changes(
-                        changes,
-                        principal.sub.clone(),
-                        context.peer.clone(),
-                    ));
-                }
-            }
+        self.establish(&context).await?;
+        // Only a session lives on after its request: count it and tell it
+        // when its principal's selection changes.
+        if self.active.set(metrics::Session::start()).is_ok()
+            && let (Some(changes), Some(principal)) = (self.scoping.changes(), self.principal())
+        {
+            let _ = self.watcher.set(watch_changes(
+                changes,
+                principal.sub.clone(),
+                context.peer.clone(),
+            ));
         }
         context.peer.set_peer_info(request.clone());
         self.negotiate_initialize(&request)
@@ -394,7 +406,7 @@ impl ServerHandler for FluentHandler {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        self.check_principal(&context)?;
+        self.establish(&context).await?;
         let tools = self.visible_tools().await.map_err(|err| {
             warn!(code = %err.code(), "listing the session's tools failed: {err}");
             ErrorData::internal_error("the session's tools are unavailable", None)
@@ -421,7 +433,7 @@ impl ServerHandler for FluentHandler {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.check_principal(&context)?;
+        self.establish(&context).await?;
         let name = request.name.as_ref();
         let args = request.arguments.unwrap_or_default();
         let descriptor = self.tools.iter().find(|t| t.name == name);

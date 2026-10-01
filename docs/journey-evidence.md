@@ -1,6 +1,6 @@
 # Journey evidence
 
-How to produce the acceptance evidence for the Tx3 Fluent spike: real ChatGPT
+How to produce the acceptance evidence for hosted Tx3 Fluent: real ChatGPT
 sessions against the hosted deployment, a transcript of every tool the
 sessions listed and called, rendered from the deployment's logs, and an
 independent decode check of each prepared transaction. Only ChatGPT sessions count as acceptance evidence. An
@@ -14,7 +14,7 @@ The evidence covers six items:
 | E1 | [Two-account isolation](#e1-two-account-isolation) | An account sees and calls only the registrations it selected. |
 | E2 | [Metadata refresh](#e2-metadata-refresh) | A changed selection reaches ChatGPT after a connector refresh. |
 | E3 | [Transfer journey](#e3-transfer-journey) | ChatGPT gets the skill, gathers inputs and prepares an unsigned transfer. |
-| E4 | [Strike journey](#e4-strike-journey) | Out of the spike's scope: no hosted Strike bundle. |
+| E4 | [Strike journey](#e4-strike-journey) | Not covered yet: no hosted Strike bundle. |
 | E5 | [Decode check](#e5-decode-check) | Each prepared transaction pays what was asked, on the asked network. |
 | E6 | [Unsupported requests](#e6-unsupported-requests) | Requests Fluent cannot serve are declined or refused, and nothing is signed or submitted. |
 
@@ -138,9 +138,8 @@ transaction.
 
 ## E4. Strike journey
 
-Out of the spike's scope: the founder narrowed it to the transfer journey on
-2026-09-30. The Strike journey needs a hosted Strike bundle, and there is
-none: `open-tx3/strike-staking:0.2.0` is not published, so
+Not covered yet: the acceptance evidence is the transfer journey. The Strike
+journey needs a hosted Strike bundle, and there is none: `open-tx3/strike-staking:0.2.0` is not published, so
 [`deploy/hosted/registrations`](../deploy/hosted/registrations) holds only
 `transfer_preprod`. Do not substitute another source or a mocked resolution.
 
@@ -207,7 +206,7 @@ the saved logs beside the transcript they were rendered from.
 | E1 | *founder: A and B exports* | *founder* | n/a | *founder* |
 | E2 | *founder* | *founder* | n/a | *founder* |
 | E3 | *founder: one per request* | *founder* | *founder: one per transaction* | *founder* |
-| E4 | n/a: out of scope (no hosted Strike bundle) | n/a | n/a | n/a |
+| E4 | n/a: not covered (no hosted Strike bundle) | n/a | n/a | n/a |
 | E5 | n/a | n/a | *founder* | *founder* |
 | E6 | *founder* | *founder* | n/a | *founder* |
 

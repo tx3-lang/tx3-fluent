@@ -6,18 +6,13 @@ endpoint and returns an **unsigned, unsubmitted** transaction with a readable
 summary. Fluent never holds keys, signs or submits: a wallet does that after the
 user has reviewed the transaction.
 
-This repository is at an early stage. It holds the workspace layout, the
-contracts shared by every later component (the configuration model, the error
-type and the result envelope), offline address inspection, the registration
-bundle loader with its registry artifact fetch, the tool catalog and the
-transaction preparation engine, and the MCP server over stdio and over
-Streamable HTTP with bearer-token or OAuth 2.1 (OIDC) authentication, and the
-hosted SQLite store of users and their registration selections that scopes each
-OIDC user's tools (`fluent admin` revokes a user or prints their selections),
-and the companion site where users sign in and choose those selections.
-Transaction tools run under public-service limits (a daily quota per user, a
-server-wide concurrency gate and a global cutoff), and the HTTP server exposes
-Prometheus metrics at `/metrics`; see [the operations guide](docs/operations.md).
+One binary, `fluent`, serves MCP over stdio for desktop clients and over
+Streamable HTTP for self-hosted servers and the hosted service at
+`https://fluent.tx3.land`, where users sign in, choose their protocols on a
+companion site and call them under per-user quotas.
+[The architecture overview](docs/architecture.md) describes the components,
+how a request is served, where state lives, the trust boundaries and the known
+limitations.
 
 ## Layout
 
@@ -27,13 +22,14 @@ Prometheus metrics at `/metrics`; see [the operations guide](docs/operations.md)
 | `crates/fluent-server` | The `fluent` binary: CLI, the MCP server over stdio and HTTP, the hosted selection store (migrations in `migrations/`) and the companion site (templates in `templates/`, stylesheet in `static/`). |
 | `xtask` | Development and evidence tooling run as `cargo xtask` (`verify`, `transcript`); never shipped or released. |
 | `examples/config` | Example configurations, loaded by the tests. |
+| `docs/architecture.md` | How the pieces fit: components, request flow, tenancy, sessions, state, trust boundaries and known limitations. |
 | `docs/operations.md` | Operating a server: metrics, setting limits from them, and what is logged. |
 | `docs/skill-template.md` | The structure every consumption skill (`SKILL.md`) follows. |
 | `deploy/hosted/registrations` | The reviewed registration bundles served by the hosted deployment, each pinned to a published registry artifact. |
 | `docs/self-hosting.md` | Running your own server: the container, bundle authoring, networks, authentication, reloading and upgrading. |
 | `docs/stdio.md` | Registering `fluent serve --stdio` with Claude Desktop, MCP Inspector and other clients. |
 | `docs/hosted-deployment.md` | What the public deployment needs: image, volume, secrets, network, health and metrics. |
-| `docs/journey-evidence.md` | How to produce the spike's acceptance evidence: ChatGPT journeys, a transcript from the logs and decode checks. |
+| `docs/journey-evidence.md` | How to produce the hosted service's acceptance evidence: ChatGPT journeys, a transcript from the logs and decode checks. |
 | `Dockerfile`, `docker-compose.yml` | The container image, published as `ghcr.io/tx3-lang/tx3-fluent`, and a self-hosting Compose example. |
 | `tests/container_smoke.sh` | Builds the image and checks it serves the fixture registrations over HTTP. |
 | `k8s/` | The Helm chart for Kubernetes, instance-agnostic, and its render tests. |
@@ -118,7 +114,7 @@ The `xtask` crate holds development and evidence tooling. It is not part of
 the `fluent` binary, never built into the container image and never
 released. Run it from a checkout with `cargo xtask <command>`; see
 [the journey evidence guide](docs/journey-evidence.md) for how the two
-commands produce the spike's evidence.
+commands produce the acceptance evidence.
 
 ### Checking a transaction
 
@@ -250,7 +246,7 @@ stdout carries only MCP messages. Rejected bundles are logged and do not stop th
 catalog whose tools cannot be built (see [Tool catalog](#tool-catalog)) stops
 the server at startup.
 
-Every session sees every loaded registration. The server lists the
+Over stdio every loaded registration is visible. The server lists the
 [tool catalog](#tool-catalog) and calls a tool by name: a transaction tool
 prepares its transaction (see [Preparing transactions](#preparing-transactions)),
 `fluent_get_skill` returns the registration's skill (a `scope/name` must match
@@ -301,12 +297,13 @@ fluent serve --http --config fluent.toml
 `serve --http` serves the same MCP server over
 [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http)
 on `[server].listen`, until SIGTERM or Ctrl-C; then it ends every session and
-waits for requests in flight. Sessions are kept in memory, so a restart ends
-them.
+waits for requests in flight. A client on an MCP protocol version before
+`2026-07-28` opens a session, which is kept in memory, so a restart ends it; a
+client on `2026-07-28` or later sends no `initialize` and holds no session.
 
 | Route | Authenticated | Serves |
 | --- | --- | --- |
-| `/mcp` | yes | MCP: `POST` messages, `GET` the session's event stream, `DELETE` the session. |
+| `/mcp` | yes | MCP: `POST` messages; for a session, `GET` its event stream and `DELETE` it. |
 | `GET /healthz` | no | `{"status": "ok", "version": "<crate version>"}`. |
 | `GET /.well-known/oauth-protected-resource` | no | [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) metadata, `oidc` mode only; also under `…/mcp`. |
 | `GET /metrics` | loopback or token | Prometheus metrics; see [the operations guide](docs/operations.md#metrics). |
@@ -342,8 +339,11 @@ reads:
 The caller's `sub`, and `email` when the token has one, form its principal
 (`sub` is `token` in `token` mode). A session belongs to the principal that
 initialized it; a request on that session authenticated as anyone else is
-refused. Fluent drops the `Authorization` header once the request is
-authenticated and never logs a token. Every session still sees every loaded
+refused. A request without a session is scoped by the principal of its own
+token. Fluent drops the `Authorization` header once the request is
+authenticated and never logs a token. In `oidc` mode with a `[store]`, each
+user sees the registrations they selected on the
+[companion site](#companion-site); otherwise every caller sees every loaded
 registration.
 
 A request body may be at most 256 KiB (`413` otherwise). To guard against DNS
@@ -433,7 +433,8 @@ A signed-in page without a session redirects to `/`. A revoked user is
 refused with `403` and their session cookie removed. Every form carries the
 session's CSRF token; a POST without it is refused with `403`. An unknown
 slug is `404`. Selection changes are announced to the user's open MCP
-sessions as `notifications/tools/list_changed`. With `[site].enabled = false`
+sessions as `notifications/tools/list_changed`; clients without a session get
+no announcement and see the change on their next `tools/list`. With `[site].enabled = false`
 none of these routes exist (`404`).
 
 ![The landing page](docs/site/landing.png)
@@ -564,10 +565,13 @@ takes effect on restart.
 
 ```text
 registrations/
-  strike_staking_mainnet/
+  transfer_preprod/
     registration.toml   manifest
     SKILL.md            consumption skill
-    protocol.tii        TII; source = "local" only
+  strike_staking_mainnet/
+    registration.toml
+    SKILL.md
+    strike-staking.tii  TII; source = "local" only
   .cache/               registry artifacts, by manifest digest
 ```
 
@@ -577,24 +581,24 @@ Unknown keys are errors. Paths are relative to the bundle and must stay inside
 it.
 
 ```toml
-slug = "strike_staking_mainnet"          # ^[a-z][a-z0-9_]{2,40}$, unique
+slug = "transfer_preprod"                # ^[a-z][a-z0-9_]{2,40}$, unique
 [protocol]                                # equal to the TII protocol block
 scope = "open-tx3"
-name = "strike-staking"
-version = "0.2.0"
-source = "local"                          # or "registry"
+name = "transfer"
+version = "0.1.0"
+source = "registry"                       # or "local"
 [protocol.registry]                       # required iff source = "registry"
 url = "https://oci.tx3.land"
-ref = "open-tx3/strike-staking:0.2.0"
+ref = "open-tx3/transfer:0.1.0"
 manifest_digest = "sha256:…"              # artifact manifest content digest
 [artifact]
-tii = "protocol.tii"                      # local only; default protocol.tii
+# tii = "protocol.tii"                    # local only; default protocol.tii
 tii_digest = "sha256:…"                   # required for registry; checked if set
 [skill]
 path = "SKILL.md"                         # default SKILL.md
 [deployment]
-profile = "mainnet"                       # mainnet | preprod | preview
-network = "mainnet"                       # must be the profile's network
+profile = "preprod"                       # mainnet | preprod | preview
+network = "preprod"                       # must be the profile's network
 ```
 
 A registry-sourced bundle carries no TII: its TII comes only from the
@@ -604,7 +608,7 @@ digest-verified [registry fetch](#registry-artifacts).
 
 At startup, each `source = "registry"` bundle's TII is fetched anonymously
 from `protocol.registry.url` by `ref`, for example
-`oci.tx3.land/open-tx3/strike-staking:0.2.0`. The URL names only a scheme, a
+`oci.tx3.land/open-tx3/transfer:0.1.0`. The URL names only a scheme, a
 host and an optional port. The fetch:
 
 1. requires the SHA-256 of the returned manifest bytes to equal
@@ -640,17 +644,17 @@ kept verbatim. Unknown frontmatter keys are errors.
 
 ```yaml
 ---
-name: strike-staking
+name: transfer-preprod
 description: One sentence ending with when to use the skill.
 license: Apache-2.0                       # optional
-protocol: open-tx3/strike-staking:0.2.0   # scope/name:version
+protocol: open-tx3/transfer:0.1.0         # scope/name:version
 tii_digest: sha256:…                      # digest of the registration's TII
-network: mainnet
+network: preprod
 revision: 1                               # the skill's own revision
 dependencies:                             # optional
-  - id: strike_balance
+  - id: wallet-address
     description: What the assistant must obtain elsewhere.
-    required_for: [stake]                 # transactions of the TII
+    required_for: [transfer]              # transactions of the TII
 ---
 ```
 
@@ -841,9 +845,11 @@ Nothing the engine logs contains an argument value or an API key.
   `Arc<Catalog>`, an `Arc<Engine>` and a `ToolScope`), `ToolScope`
   (`visible_slugs`, the registrations one session sees), `AllRegistrations`
   (every loaded one), `INSTRUCTIONS` (at most 512 characters) and
-  `error_json`. `FluentHandler::for_session` gives each HTTP session its own
-  handler, whose `principal()` is the `Principal` that initialized it;
-  `request_principal` reads the one attached to a request.
+  `error_json`. `FluentHandler::for_session` gives each HTTP session, and
+  each request without a session, its own handler, whose `principal()` is
+  the `Principal` of its first request; `request_principal` reads the one
+  attached to a request. `Scoping` chooses each handler's `ToolScope` from
+  that principal.
 - `fluent_server::http`: `HttpServer` (`bind`, `local_addr`, `run`),
   `router`, `shutdown_signal` and `MAX_BODY_BYTES`; `http::auth`:
   `Authenticator`, the `require_auth` middleware, `Principal` (`sub`,
